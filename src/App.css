@@ -1,0 +1,87 @@
+.app {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+}
+
+.app-header {
+    background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-primary-dark) 100%);
+    padding: var(--spacing-lg) var(--spacing-xl);
+    text-align: center;
+}
+
+.app-header h1 {
+    font-size: 1.75rem;
+    font-weight: 700;
+    margin-bottom: var(--spacing-xs);
+}
+
+.app-header .subtitle {
+    color: rgba(255, 255, 255, 0.8);
+    font-size: 0.875rem;
+}
+
+.app-main {
+    flex: 1;
+    padding: var(--spacing-xl);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.status-card {
+    background: var(--color-surface);
+    border-radius: var(--radius-lg);
+    padding: var(--spacing-xl);
+    text-align: center;
+    max-width: 400px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.status-card h2 {
+    font-size: 1.25rem;
+    margin-bottom: var(--spacing-md);
+}
+
+.status-card p {
+    color: var(--color-text-muted);
+    margin-bottom: var(--spacing-sm);
+}
+
+.status-card .status {
+    color: var(--color-success);
+    font-weight: 500;
+}
+
+.api-status {
+    margin-top: var(--spacing-md);
+    padding-top: var(--spacing-md);
+    border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.status-label {
+    color: var(--color-text-muted);
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    margin-bottom: var(--spacing-xs);
+}
+
+.status.loading {
+    color: var(--color-warning);
+}
+
+.status.error {
+    color: var(--color-error);
+}
+
+.status.success {
+    color: var(--color-success);
+}
+
+.status.production {
+    color: var(--color-primary);
+}
+
+.status.development {
+    color: var(--color-warning);
+}

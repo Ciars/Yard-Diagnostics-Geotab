@@ -1,0 +1,135 @@
+/**
+ * Sidebar Styles
+ * 
+ * High-fidelity sidebar for GeoYard.
+ */
+
+.sidebar {
+    width: 280px;
+    min-width: 280px;
+    height: 100vh;
+    background: var(--color-primary);
+    display: flex;
+    flex-direction: column;
+    z-index: 100;
+}
+
+.sidebar__header {
+    padding: 24px 20px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.sidebar__logo h1 {
+    color: #fff;
+    font-size: 1.25rem;
+    font-weight: 700;
+    margin: 0;
+    line-height: 1;
+}
+
+.sidebar__logo .subtitle {
+    color: #64748b;
+    font-size: 0.75rem;
+    font-weight: 500;
+}
+
+.sidebar__logout {
+    background: transparent;
+    border: none;
+    color: #64748b;
+    cursor: pointer;
+    font-size: 1.1rem;
+    padding: 4px;
+    transition: color 0.2s;
+}
+
+.sidebar__logout:hover {
+    color: #fff;
+}
+
+.sidebar__search {
+    padding: 0 24px 24px;
+    position: relative;
+    display: flex;
+    align-items: center;
+}
+
+.search-icon {
+    position: absolute;
+    left: 32px;
+    color: #64748b;
+    display: flex;
+    align-items: center;
+}
+
+.sidebar__search-input {
+    width: 100%;
+    background: #1e293b;
+    border: none;
+    border-radius: 8px;
+    padding: 10px 10px 10px 36px;
+    color: #fff;
+    font-size: 0.85rem;
+}
+
+.sidebar__search-input::placeholder {
+    color: #475569;
+}
+
+.sidebar__list {
+    flex: 1;
+    overflow-y: auto;
+    padding-bottom: 24px;
+}
+
+.sidebar__zone {
+    width: 100%;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 24px;
+    background: transparent;
+    border: none;
+    color: #94a3b8;
+    cursor: pointer;
+    font-size: 0.85rem;
+    font-family: inherit;
+    text-align: left;
+    transition: all 0.2s;
+}
+
+.sidebar__zone:hover {
+    background: rgba(255, 255, 255, 0.05);
+    color: #fff;
+}
+
+.sidebar__zone--active {
+    background: var(--color-accent);
+    color: #fff !important;
+    font-weight: 600;
+}
+
+.sidebar__zone-name {
+    flex: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.sidebar__zone-badge {
+    background: #1e293b;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 0.7rem;
+    font-weight: 700;
+    min-width: 24px;
+    text-align: center;
+    color: #cbd5e1;
+}
+
+.sidebar__zone--active .sidebar__zone-badge {
+    background: rgba(255, 255, 255, 0.2);
+    color: #fff;
+}

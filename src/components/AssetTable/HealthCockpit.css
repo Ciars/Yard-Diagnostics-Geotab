@@ -1,0 +1,363 @@
+.health-cockpit {
+    display: grid;
+    grid-template-columns: 1fr 1.2fr;
+    gap: 1.5rem;
+    padding: 1.5rem;
+    background-color: #f8fafc;
+    border-top: 1px solid #e2e8f0;
+}
+
+/* Column Structure */
+.health-column {
+    background: white;
+    border-radius: 8px;
+    border: 1px solid #e2e8f0;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+}
+
+.column-header {
+    background: #f1f5f9;
+    padding: 0.75rem 1rem;
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    border-bottom: 1px solid #e2e8f0;
+}
+
+.column-header h3 {
+    margin: 0;
+    font-size: 0.85rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    color: #475569;
+    letter-spacing: 0.05em;
+}
+
+.column-content {
+    padding: 1rem;
+    flex: 1;
+}
+
+/* Status Card (No Issues) */
+.status-card {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    height: 100%;
+    gap: 0.75rem;
+    color: #64748b;
+    padding: 2rem 0;
+}
+
+.status-icon--success {
+    color: #22c55e;
+}
+
+.status-text strong {
+    display: block;
+    color: #0f172a;
+    font-size: 1rem;
+}
+
+/* Issue Count Badge */
+.issue-count-badge {
+    background: #ef4444;
+    color: white;
+    font-size: 0.7rem;
+    font-weight: 700;
+    padding: 0.15rem 0.5rem;
+    border-radius: 99px;
+    margin-left: auto;
+}
+
+/* ============================================ */
+/* FLAT ISSUES LIST - All data visible upfront */
+/* ============================================ */
+.issues-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.issue-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+    padding: 0.6rem 0.75rem;
+    border-radius: 6px;
+    border-left: 3px solid #94a3b8;
+    background: #f8fafc;
+}
+
+/* Priority colors */
+.issue--recurring {
+    background: #fef2f2;
+    border-left-color: #dc2626;
+}
+
+.issue--recurring .issue-row__icon {
+    color: #dc2626;
+}
+
+.issue--alert {
+    background: #fff7ed;
+    border-left-color: #ea580c;
+}
+
+.issue--alert .issue-row__icon {
+    color: #ea580c;
+}
+
+.issue--monitor {
+    background: #fefce8;
+    border-left-color: #ca8a04;
+}
+
+.issue--monitor .issue-row__icon {
+    color: #ca8a04;
+}
+
+.issue--info {
+    background: #f0f9ff;
+    border-left-color: #0284c7;
+}
+
+.issue--info .issue-row__icon {
+    color: #0284c7;
+}
+
+.issue-row__icon {
+    flex-shrink: 0;
+    margin-top: 0.1rem;
+}
+
+.issue-row__content {
+    flex: 1;
+    min-width: 0;
+}
+
+/* Main line: DTC code + Name */
+.issue-row__main {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
+.issue-row__dtc {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    font-size: 0.8rem;
+    font-weight: 700;
+    color: #dc2626;
+    background: #fee2e2;
+    padding: 0.1rem 0.4rem;
+    border-radius: 3px;
+}
+
+.issue-row__name {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: #1e293b;
+}
+
+.issue-row__count {
+    font-size: 0.7rem;
+    font-weight: 700;
+    color: #64748b;
+    background: #e2e8f0;
+    padding: 0.1rem 0.35rem;
+    border-radius: 3px;
+}
+
+/* Meta line: Controller, Severity, Source, Time */
+.issue-row__meta {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 0.25rem;
+    font-size: 0.7rem;
+    color: #64748b;
+    flex-wrap: wrap;
+}
+
+.issue-row__controller {
+    font-style: italic;
+}
+
+.issue-row__severity {
+    font-weight: 600;
+    padding: 0.1rem 0.3rem;
+    border-radius: 3px;
+    text-transform: uppercase;
+    font-size: 0.6rem;
+}
+
+.severity--critical {
+    background: #dc2626;
+    color: white;
+}
+
+.severity--warning {
+    background: #f59e0b;
+    color: white;
+}
+
+.severity--medium {
+    background: #f59e0b;
+    color: white;
+}
+
+.severity--low {
+    background: #94a3b8;
+    color: white;
+}
+
+.severity--info {
+    background: #0284c7;
+    color: white;
+}
+
+.issue-row__source {
+    color: #94a3b8;
+}
+
+.issue-row__time {
+    color: #94a3b8;
+    margin-left: auto;
+}
+
+/* ======================== */
+/* DVIR Defects - Flat rows */
+/* ======================== */
+.defects-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.defect-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+    padding: 0.6rem 0.75rem;
+    border-radius: 6px;
+    background: #fef2f2;
+    border-left: 3px solid #dc2626;
+}
+
+.defect-row--repaired {
+    background: #f0fdf4;
+    border-left-color: #22c55e;
+}
+
+.defect-icon {
+    color: #dc2626;
+    flex-shrink: 0;
+    margin-top: 0.1rem;
+}
+
+.defect-icon--repaired {
+    color: #22c55e;
+}
+
+.defect-row__content {
+    flex: 1;
+}
+
+.defect-row__name {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: #991b1b;
+    display: block;
+}
+
+.defect-row--repaired .defect-row__name {
+    color: #15803d;
+}
+
+.defect-row__meta {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 0.25rem;
+    font-size: 0.7rem;
+    color: #b91c1c;
+    flex-wrap: wrap;
+}
+
+.defect-row--repaired .defect-row__meta {
+    color: #166534;
+}
+
+.repair-status {
+    font-weight: 600;
+    padding: 0.1rem 0.3rem;
+    border-radius: 3px;
+    text-transform: uppercase;
+    font-size: 0.6rem;
+}
+
+.repair-status--notrepaired {
+    background: #dc2626;
+    color: white;
+}
+
+.repair-status--repaired {
+    background: #22c55e;
+    color: white;
+}
+
+.repair-status--notNecessary {
+    background: #94a3b8;
+    color: white;
+}
+
+.defect-row__comment {
+    margin: 0.35rem 0 0 0;
+    font-size: 0.75rem;
+    font-style: italic;
+    color: #64748b;
+}
+
+/* ===================== */
+/* CONNECTIVITY ALERT */
+/* ===================== */
+.connectivity-alert {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.6rem 0.75rem;
+    background: #fef2f2;
+    border: 1px solid #fecaca;
+    border-radius: 6px;
+    color: #991b1b;
+    margin-bottom: 0.75rem;
+    font-size: 0.8rem;
+}
+
+.connectivity-alert strong {
+    font-weight: 600;
+}
+
+.connectivity-alert span {
+    color: #b91c1c;
+}
+
+/* DVIR Column with defects */
+.health-column--dvir.has-defects {
+    border-color: #fca5a5;
+    box-shadow: 0 1px 3px rgba(220, 38, 38, 0.1);
+}
+
+.health-column--dvir.has-defects .column-header {
+    background: #fef2f2;
+    border-bottom-color: #fecaca;
+}
+
+.health-column--dvir.has-defects .column-header h3 {
+    color: #991b1b;
+}

@@ -1,0 +1,144 @@
+/**
+ * Zone Map Styles
+ * 
+ * Minimum height 300px per UI_BLUEPRINT.md
+ */
+
+.zone-map {
+    height: 100%;
+    width: 100%;
+    position: relative;
+    background: #eef2f6;
+}
+
+.zone-map__container {
+    height: 100% !important;
+    width: 100%;
+    z-index: 1;
+}
+
+/* Empty state */
+.zone-map--empty {
+    height: 300px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #f9fafb;
+    border: 2px dashed #e5e7eb;
+}
+
+.zone-map__placeholder {
+    text-align: center;
+}
+
+.zone-map__placeholder-icon {
+    display: block;
+    font-size: 2rem;
+    margin-bottom: var(--spacing-sm);
+}
+
+.zone-map__placeholder-text {
+    color: var(--color-text-muted);
+    font-size: 0.875rem;
+}
+
+/* Legend */
+.zone-map__legend {
+    position: absolute;
+    bottom: 12px;
+    right: 12px;
+    background: rgba(255, 255, 255, 0.9);
+    padding: 6px 12px;
+    border-radius: 4px;
+    display: flex;
+    gap: 12px;
+    font-size: 0.65rem;
+    font-weight: 600;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.1);
+    z-index: 1000;
+    border: 1px solid #eef2f6;
+}
+
+.legend-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: #64748b;
+}
+
+.legend-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+}
+
+.zone-map__updates-badge {
+    position: absolute;
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 1000;
+    background: #1e3a8a;
+    /* Deep Navy Blue */
+    color: white;
+    padding: 8px 16px;
+    border-radius: 8px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+    cursor: pointer;
+    transition: background 0.2s;
+    border: none;
+}
+
+.zone-map__updates-badge:hover {
+    background: #1e40af;
+}
+
+.zone-map__updates-badge .icon {
+    font-size: 0.9rem;
+}
+
+/* Popup styles */
+.marker-popup {
+    font-size: 0.8125rem;
+    line-height: 1.4;
+}
+
+.marker-popup strong {
+    display: block;
+    margin-bottom: 4px;
+}
+
+/* Override Leaflet defaults for better styling */
+.leaflet-container {
+    font-family: inherit;
+}
+
+.leaflet-popup-content-wrapper {
+    border-radius: var(--radius-sm);
+}
+
+.leaflet-popup-content {
+    margin: 10px 12px;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+    .zone-map__container {
+        height: 250px;
+        min-height: 250px;
+    }
+
+    .zone-map--empty {
+        height: 250px;
+    }
+
+    .zone-map__legend {
+        flex-wrap: wrap;
+        max-width: 160px;
+    }
+}
