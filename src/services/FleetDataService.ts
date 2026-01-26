@@ -165,7 +165,7 @@ export class FleetDataService {
                     typeName: 'StatusData',
                     search: {
                         deviceSearch: { id: deviceId },
-                        diagnosticSearch: { id: 'DiagnosticDeviceTotalFuelId' },
+                        diagnosticSearch: { id: 'DiagnosticFuelLevelId' }, // FIX: Use Percentage ID, not Total Volume
                         fromDate: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
                     },
                     resultsLimit: 1,
@@ -233,7 +233,12 @@ export class FleetDataService {
                 const isCharging = false;
                 const dormancyDays = null;
                 const zoneEntryTime = statusInfo.dateTime;
-                const zoneDurationMs = Math.max(0, Date.now() - new Date(statusInfo.dateTime).getTime());
+
+                // FIX: Ensure positive duration. If entryTime is future, treat as 0 (Just Now)
+                // Use Math.abs if purely displaying magnitude, but logically it should be clamped to 0.
+                const diffMs = Date.now() - new Date(statusInfo.dateTime).getTime();
+                const zoneDurationMs = Math.max(0, diffMs);
+
                 const isZoneEntryEstimate = true;
                 const hasCriticalFaults = false;
                 const hasUnrepairedDefects = false;
