@@ -140,12 +140,12 @@ export function ZoneMap({ zone, vehicles, filteredVehicleIds }: ZoneMapProps) {
                         <CircleMarker
                             key={vehicle.device.id}
                             center={[lat, lng]}
-                            radius={8}
+                            radius={5}
                             pathOptions={{
                                 color: color,
                                 fillColor: color,
-                                fillOpacity: 0.8,
-                                weight: 2,
+                                fillOpacity: 0.5,
+                                weight: 1.5,
                             }}
                         >
                             <Popup>
