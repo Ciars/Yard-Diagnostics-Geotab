@@ -64,11 +64,12 @@ export class GeotabApiFactory {
      * Check if we're running inside the Geotab portal
      */
     static isProductionEnvironment(): boolean {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const w = window as any;
         return (
             typeof window !== 'undefined' &&
-            'api' in window &&
-            window.api !== undefined &&
-            typeof window.api.call === 'function'
+            ((w.api && typeof w.api.call === 'function') ||
+                (w.geotab && w.geotab.api && typeof w.geotab.api.call === 'function'))
         );
     }
 
@@ -82,10 +83,11 @@ export class GeotabApiFactory {
 
     private static async createInstance(): Promise<IGeotabApi> {
         if (this.isProductionEnvironment()) {
-            console.log('[GeotabApiFactory] Production mode - using window.api');
+            console.log('[GeotabApiFactory] Production mode detected');
             const { ProductionApiAdapter } = await import('./ProductionApiAdapter');
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            return new ProductionApiAdapter(window.api as any);
+            const api = (window as any).api || (window as any).geotab?.api;
+            return new ProductionApiAdapter(api);
         }
 
         // Development mode
