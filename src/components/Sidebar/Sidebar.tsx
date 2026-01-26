@@ -55,7 +55,7 @@ export function Sidebar() {
             <div className="sidebar__header">
                 <div className="sidebar__logo">
                     <h1>GeoYard</h1>
-                    <span className="subtitle">circet</span>
+                    <span className="subtitle">Yard Vision</span>
                 </div>
                 <button className="sidebar__logout" aria-label="Logout">
                     <LogOut size={18} />
