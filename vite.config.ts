@@ -14,10 +14,10 @@ export default defineConfig({
             '@': path.resolve(__dirname, './src'),
         },
     },
-    // Security: Strip console logs and debugger in production
-    esbuild: {
-        drop: ['console', 'debugger'],
-    },
+    // Security: Logs enabled for debugging (Temporary)
+    // esbuild: {
+    //    drop: ['console', 'debugger'],
+    // },
     build: {
         outDir: 'dist',
         sourcemap: false,
