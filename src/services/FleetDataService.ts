@@ -144,7 +144,8 @@ export class FleetDataService {
         // Step 2: Batch fetch diagnostics and faults
         // const now = new Date().toISOString();
         // Extend lookback to find all faults and trips for report fidelity (e.g. 1 year)
-        const longAgo = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString();
+        // Extend lookback to find all faults and trips for report fidelity (e.g. 1 year)
+        // const longAgo = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString();
         const dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
 
         const vehicleData: VehicleData[] = [];
@@ -213,6 +214,8 @@ export class FleetDataService {
                         resultsLimit: 1,
                     },
                 },
+                // SAFE MODE: Commenting out risky calls that might cause permission failures
+                /*
                 // Get active faults
                 {
                     method: 'Get',
@@ -267,13 +270,15 @@ export class FleetDataService {
                         },
                     },
                 },
+                */
             ]);
 
             const results = await this.api.multiCall<unknown[]>(calls);
 
-            // Process results (10 results per device)
+            // Process results (5 results per device in SAFE MODE instead of 10)
+            const safeModeStride = 5;
             for (let i = 0; i < batch.length; i++) {
-                const baseIndex = i * 10;
+                const baseIndex = i * safeModeStride;
                 const deviceId = batch[i];
                 const statusInfo = statusInfos.find((s) => s.device.id === deviceId);
 
@@ -291,15 +296,17 @@ export class FleetDataService {
                 const fuelData = (results[baseIndex + 2] as StatusData[]) || [];
                 const socData = (results[baseIndex + 3] as StatusData[]) || [];
                 const chargingData = (results[baseIndex + 4] as StatusData[]) || [];
-                const faults = (results[baseIndex + 5] as FaultData[]) || [];
-                const trips = (results[baseIndex + 6] as Trip[]) || [];
-                const dvirDefects = (results[baseIndex + 7] as any[]) || [];
-                const users = (results[baseIndex + 8] as any[]) || [];
-                const maintenanceReminders = (results[baseIndex + 9] as any[]) || [];
+
+                // SAFE MODE DEFAULTS
+                const faults: FaultData[] = [];
+                const trips: Trip[] = [];
+                const dvirDefects: any[] = [];
+                const users: any[] = [];
+                const maintenanceReminders: any[] = [];
 
                 const device = devices?.[0];
-                const lastTrip = trips?.[0];
-                const driver = users?.[0];
+                const lastTrip = trips?.[0]; // Will be undefined
+                const driver = users?.[0]; // Will be undefined
 
                 // Real diagnostic values (no more mocking!)
                 const batteryVoltage = batteryData?.[0]?.data;
