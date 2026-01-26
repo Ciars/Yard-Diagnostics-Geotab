@@ -34,29 +34,37 @@ export function calculateDormancy(
 ): DormancyResult {
     const now = new Date();
 
-    // If we have a last trip with a stop time, use that
+    // Priority: 
+    // 1. Trip stop time (if not null)
+    // 2. Trip start time (if stop is null, vehicle is likely moving)
+    // 3. Heartbeat timestamp
     let lastMoveDate: Date | null = null;
 
-    if (lastTrip?.stop) {
+    if (lastTrip?.stop && lastTrip.stop !== '0001-01-01T00:00:00.000Z') {
         lastMoveDate = new Date(lastTrip.stop);
+    } else if (lastTrip?.start) {
+        // If it's driving now, it's active "Now"
+        lastMoveDate = new Date();
     } else if (deviceStatus?.dateTime) {
-        // Fall back to device status timestamp
         lastMoveDate = new Date(deviceStatus.dateTime);
     }
 
-    if (!lastMoveDate || isNaN(lastMoveDate.getTime())) {
+    // Safety: If date is somehow pre-2000, it's likely a null/wrong value
+    if (!lastMoveDate || isNaN(lastMoveDate.getTime()) || lastMoveDate.getFullYear() < 2000) {
         return {
             dormancyDays: 0,
             dormancyHours: 0,
             lastMoveDate: null,
             isDormant: false,
             isJustArrived: false,
-            displayText: 'Unknown',
+            displayText: 'Active',
         };
     }
 
     const msSinceMove = now.getTime() - lastMoveDate.getTime();
-    const hoursSinceMove = msSinceMove / (1000 * 60 * 60);
+    // Clamp to 0 to avoid future dates causing negative dormancy
+    const diffMs = Math.max(0, msSinceMove);
+    const hoursSinceMove = diffMs / (1000 * 60 * 60);
     const daysSinceMove = hoursSinceMove / 24;
 
     // Check if just arrived (< 5 minutes)
