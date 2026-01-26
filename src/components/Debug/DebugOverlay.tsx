@@ -1,12 +1,17 @@
 import React, { useEffect, useState } from 'react';
-import { useFleetStore } from '../../store/useFleetStore';
+import { useFleetStore, selectSelectedZone } from '../../store/useFleetStore';
 import { GeotabApiFactory } from '../../services/GeotabApiFactory';
 
 export const DebugOverlay: React.FC = () => {
-    const { vehicles, lastUpdated, isPollingPaused } = useFleetStore();
+    const vehicles = useFleetStore((s) => s.vehicles);
+    const selectedZone = useFleetStore(selectSelectedZone);
+
     const [envType, setEnvType] = useState<string>('Detecting...');
     const [error, setError] = useState<string | null>(null);
-    const [windowPayload, setWindowPayload] = useState<string>('');
+    const [debugLog, setDebugLog] = useState<string[]>([]);
+    const [deviceCount, setDeviceCount] = useState<string>('?');
+
+    const log = (msg: string) => setDebugLog(prev => [msg, ...prev].slice(0, 5));
 
     useEffect(() => {
         const checkEnv = async () => {
@@ -22,22 +27,14 @@ export const DebugOverlay: React.FC = () => {
 
                 setEnvType(status);
 
-                // Inspect window object for debugging
-                // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                const w = window as any;
-                const debugInfo = {
-                    hasApi: !!w.api,
-                    hasGeotab: !!w.geotab,
-                    location: window.location.href,
-                    params: window.location.search
-                };
-                setWindowPayload(JSON.stringify(debugInfo, null, 2));
-
-                if (inContext) {
-                    // Test a simple call
+                if (inContext && ready) {
                     const api = await GeotabApiFactory.getInstance();
                     const session = await api.getSession();
-                    console.log('Session retrieved:', session);
+                    log(`Session: ${session.userName}`);
+
+                    // Quick check of total fleet size
+                    const allDevices = await api.call<unknown[]>('Get', { typeName: 'DeviceStatusInfo', resultsLimit: 10 });
+                    setDeviceCount(allDevices.length > 0 ? `Found ${allDevices.length}+ (Sample)` : 'No Data');
                 }
             } catch (err) {
                 setError(err instanceof Error ? err.message : String(err));
@@ -59,16 +56,21 @@ export const DebugOverlay: React.FC = () => {
             zIndex: 99999,
             fontFamily: 'monospace',
             fontSize: '12px',
-            maxWidth: '400px',
-            maxHeight: '80vh',
+            maxWidth: '300px',
+            maxHeight: '400px',
             overflow: 'auto',
             border: '1px solid #00ff00'
         }}>
-            <h3 style={{ margin: '0 0 10px', borderBottom: '1px solid #333' }}>🕵️ Debug Console</h3>
+            <h3 style={{ margin: '0 0 10px', borderBottom: '1px solid #333' }}>🕵️ Deep Debug</h3>
             <div><strong>Env:</strong> {envType}</div>
-            <div><strong>Vehicles:</strong> {vehicles.length}</div>
-            <div><strong>Last Upd:</strong> {lastUpdated ? new Date(lastUpdated).toLocaleTimeString() : 'Never'}</div>
-            <div><strong>Polling:</strong> {isPollingPaused ? 'PAUSED' : 'ACTIVE'}</div>
+            <div><strong>Selected Zone:</strong> {selectedZone?.name || 'None'}</div>
+            <div><strong>Vehicles (In Zone):</strong> {vehicles.length}</div>
+            <div><strong>API Test:</strong> {deviceCount}</div>
+
+            <div style={{ marginTop: '10px', borderTop: '1px solid #333' }}>
+                <strong>Log:</strong>
+                {debugLog.map((l, i) => <div key={i} style={{ fontSize: '10px' }}>{l}</div>)}
+            </div>
 
             {error && (
                 <div style={{ color: 'red', marginTop: '10px' }}>
@@ -76,13 +78,6 @@ export const DebugOverlay: React.FC = () => {
                     {error}
                 </div>
             )}
-
-            <div style={{ marginTop: '10px' }}>
-                <strong>Window State:</strong>
-                <pre style={{ margin: 0, fontSize: '10px' }}>
-                    {windowPayload}
-                </pre>
-            </div>
         </div>
     );
 };
