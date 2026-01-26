@@ -8,6 +8,7 @@ import { useEffect, useState } from 'react';
 import { useFleetStore, selectSelectedZoneId, selectSelectedZone } from '@/store/useFleetStore';
 import { useVehiclesInZone } from '@/hooks';
 import { Sidebar } from '@/components/Sidebar/Sidebar';
+import { DebugOverlay } from '@/components/Debug/DebugOverlay';
 import { KpiTiles } from '@/components/KpiTiles/KpiTiles';
 import { AssetTable } from '@/components/AssetTable/AssetTable';
 import { ZoneMap } from '@/components/Map/ZoneMap';
@@ -60,6 +61,7 @@ export function Dashboard() {
 
     return (
         <div className="dashboard">
+            <DebugOverlay />
             {/* Panel 1: Sidebar (Left) */}
             <Sidebar />
 
