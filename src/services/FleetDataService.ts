@@ -15,6 +15,7 @@ import type {
     VehicleData,
     DiagnosticId,
     User,
+    Trip,
 } from '@/types/geotab';
 // import { DiagnosticIds } from '@/types/geotab'; // Unused in direct string usage
 import { isPointInPolygon } from '@/lib/geoUtils';
@@ -60,6 +61,7 @@ function hoursSince(dateString: string): number {
 // =============================================================================
 
 import { VinDecoderService } from './VinDecoderService';
+import { calculateDormancy } from './DormancyService';
 
 export class FleetDataService {
     private api: IGeotabApi;
@@ -152,7 +154,7 @@ export class FleetDataService {
             const identityResults = await Promise.all(identityPromises);
 
             // ====================================================================================================
-            // STAGE 2: Enrichment Data (Status, Driver, Fuel, DVIR) - PARALLEL SETTLED
+            // STAGE 2: Enrichment Data (Status, Driver, Fuel, DVIR, Trips) - PARALLEL SETTLED
             // ====================================================================================================
 
             const enrichmentPromises = batch.map(async (deviceId) => {
@@ -188,24 +190,37 @@ export class FleetDataService {
                     resultsLimit: 1
                 }) : Promise.resolve([]);
 
-                // 4. DVIR Logs (Last 7 Days to catch recent unrepaired)
-                const dvirCall = this.api.call<any[]>('Get', { // using any[] as DVIRLog might not be fully typed yet
+                // 4. DVIR Logs (Last 14 Days to catch recent history)
+                const dvirCall = this.api.call<any[]>('Get', {
                     typeName: 'DVIRLog',
                     search: {
                         deviceSearch: { id: deviceId },
-                        fromDate: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
+                        fromDate: new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString(),
                     },
-                    resultsLimit: 5,
+                    resultsLimit: 10,
                 });
 
-                // Use allSettled so one failure (e.g. Driver 403) doesn't kill Fuel
-                const [fuelRes, socRes, driverRes, dvirRes] = await Promise.allSettled([fuelCall, socCall, driverCall, dvirCall]);
+                // 5. Last Trip (Essential for Stay Duration)
+                const tripCall = this.api.call<Trip[]>('Get', {
+                    typeName: 'Trip',
+                    search: {
+                        deviceSearch: { id: deviceId },
+                        fromDate: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString(),
+                    },
+                    resultsLimit: 1,
+                });
+
+                // Use allSettled so one failure (e.g. Driver 403) doesn't kill primary data
+                const [fuelRes, socRes, driverRes, dvirRes, tripRes] = await Promise.allSettled([
+                    fuelCall, socCall, driverCall, dvirCall, tripCall
+                ]);
 
                 return {
                     fuel: fuelRes.status === 'fulfilled' ? fuelRes.value : [],
                     soc: socRes.status === 'fulfilled' ? socRes.value : [],
                     driver: driverRes.status === 'fulfilled' ? driverRes.value : [],
                     dvir: dvirRes.status === 'fulfilled' ? dvirRes.value : [],
+                    trip: tripRes.status === 'fulfilled' ? tripRes.value : [],
                 };
             });
 
@@ -223,8 +238,17 @@ export class FleetDataService {
 
                 // 2. Enrichment
                 const enrichment = enrichmentResults[i];
-                const fuelLevel = enrichment.fuel?.[0]?.data;
-                const stateOfCharge = enrichment.soc?.[0]?.data;
+
+                // Final safety clamp for Fuel (Visual fix for user's report)
+                let fuelLevel = enrichment.fuel?.[0]?.data;
+                if (fuelLevel !== undefined) {
+                    fuelLevel = Math.min(100, Math.max(0, fuelLevel));
+                }
+
+                let stateOfCharge = enrichment.soc?.[0]?.data;
+                if (stateOfCharge !== undefined) {
+                    stateOfCharge = Math.min(100, Math.max(0, stateOfCharge));
+                }
 
                 let driverName = statusInfo.driver?.name || 'Unknown';
                 // User result is likely User[]
@@ -237,45 +261,41 @@ export class FleetDataService {
                 }
 
                 // Process DVIR
-                // Sort by date desc
-                const dvirLogs = (enrichment.dvir || []).sort((a: any, b: any) => new Date(b.dateTime).getTime() - new Date(a.dateTime).getTime());
-                const latestDvir = dvirLogs[0];
+                const dvirLogs = (enrichment.dvir || []).sort((a: any, b: any) =>
+                    new Date(b.dateTime).getTime() - new Date(a.dateTime).getTime()
+                );
+
                 const dvirDefectsList: any[] = [];
                 let hasUnrepairedDefects = false;
 
-                // Check for defects in the latest log or recent logs
-                // Simplistic logic: if latest log has defects, show them.
-                // Or if any recent log refers to unrepaired ? Geotab DVIR logic is complex.
-                // We'll just show the LATEST report's status.
-                if (latestDvir) {
-                    // defectList is usually a property of DVIRLog
-                    if (latestDvir.defectList && latestDvir.defectList.length > 0) {
-                        hasUnrepairedDefects = latestDvir.repairStatus === 'NotRepaired';
-                        dvirDefectsList.push(...latestDvir.defectList.map((d: any) => ({
-                            id: d.id || 'unknown',
+                // Check for defects in the logs
+                for (const log of dvirLogs) {
+                    if (log.defectList && log.defectList.length > 0) {
+                        const unrepaired = log.repairStatus === 'NotRepaired' || !log.repairStatus;
+                        if (unrepaired) hasUnrepairedDefects = true;
+
+                        dvirDefectsList.push(...log.defectList.map((d: any) => ({
+                            id: d.id || `def-${Math.random().toString(36).substr(2, 9)}`,
                             defectName: d.defect?.name || 'Unknown Defect',
-                            comment: latestDvir.comment || '', // Log comment
-                            date: latestDvir.dateTime,
-                            driverName: latestDvir.driver?.name || 'Unknown',
-                            repairStatus: latestDvir.repairStatus
+                            comment: log.comment || '',
+                            date: log.dateTime,
+                            driverName: log.driver?.name || 'Unknown',
+                            repairStatus: log.repairStatus || 'NotRepaired',
+                            isRepaired: log.repairStatus === 'Repaired' || log.repairStatus === 'NotNecessary'
                         })));
                     }
                 }
 
-                // Standard Defaults
+                // Accurate Stay Duration via Last Trip
+                const latestTrip = enrichment.trip?.[0];
+                const dormancy = calculateDormancy(latestTrip, statusInfo);
+                const zoneDurationMs = Math.max(0, Math.floor(dormancy.dormancyHours * 3600000));
+
+                const dormancyDays = dormancy.isDormant ? Math.floor(dormancy.dormancyDays) : null;
+                const zoneEntryTime = latestTrip?.stop || statusInfo.dateTime;
+                const isZoneEntryEstimate = !latestTrip?.stop;
+
                 const isCharging = false;
-                const dormancyDays = null;
-                const zoneEntryTime = statusInfo.dateTime;
-
-                // FIX: Duration Calculation (Redundant Clamp)
-                const now = Date.now();
-                const entry = new Date(statusInfo.dateTime).getTime();
-                // If entry is in future (> now), diff is negative. Math.max(0) fixes it.
-                // If entry is way in past (< now), diff is positive.
-                const diffMs = now - entry;
-                const zoneDurationMs = Math.max(0, diffMs);
-
-                const isZoneEntryEstimate = true;
                 const hasCriticalFaults = false;
                 const allFaults: FaultData[] = [];
                 const vehicleIssues: any[] = [];
@@ -319,7 +339,7 @@ export class FleetDataService {
                     },
                     hasUnrepairedDefects,
                     activeFaults: allFaults,
-                    lastTrip: undefined,
+                    lastTrip: latestTrip,
                     serviceDueDays: undefined,
                 });
             }

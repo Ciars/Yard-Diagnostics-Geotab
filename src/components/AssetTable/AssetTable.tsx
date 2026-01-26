@@ -60,25 +60,21 @@ export function AssetTable({ vehicles, isLoading }: AssetTableProps) {
     };
 
     // Format duration: hours for <24h, days for >=24h
-    // Prefix with ~ for estimates (when polygon match wasn't possible)
     const formatZoneDuration = (vehicle: VehicleData): string => {
-        // Use pre-calculated, clamped duration from service
         const ms = vehicle.zoneDurationMs ?? 0;
         const hours = ms / (1000 * 60 * 60);
 
-        // If clamped to 0 (future/now), show "Active" to imply communicating
-        if (ms === 0) return 'Active';
+        // Use "Just Arrived" for < 5 mins, "Active" for < 1h
+        if (ms < 5 * 60 * 1000) return 'Just Arrived';
+        if (hours < 1) return '< 1h';
 
-        const prefix = vehicle.isZoneEntryEstimate ? '~' : '';
-
-        if (hours < 1) return 'Active'; // < 1h is also "Active"
-        if (hours < 24) return `${prefix}${Math.round(hours)}h`;
+        if (hours < 24) return `${Math.round(hours)}h`;
 
         // Cap display at "365d+" if it hits our cap
         if (hours >= 24 * 365) return '>1y';
 
         const days = Math.floor(hours / 24);
-        return `${prefix}${days}d`;
+        return `${days}d`;
     };
 
     // Handle sort click
@@ -178,7 +174,7 @@ export function AssetTable({ vehicles, isLoading }: AssetTableProps) {
                     <Camera size={14} />
                 </div>
                 <button className="asset-table__header-cell col-dur sortable" onClick={() => handleSort('duration')}>
-                    UPDATED <SortIndicator field="duration" />
+                    STAY <SortIndicator field="duration" />
                 </button>
             </div>
 
