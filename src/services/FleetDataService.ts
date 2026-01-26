@@ -144,7 +144,6 @@ export class FleetDataService {
         // Step 2: Batch fetch diagnostics and faults
         // const now = new Date().toISOString();
         // Extend lookback to find all faults and trips for report fidelity (e.g. 1 year)
-        // Extend lookback to find all faults and trips for report fidelity (e.g. 1 year)
         // const longAgo = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString();
         const dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
 
@@ -273,7 +272,14 @@ export class FleetDataService {
                 */
             ]);
 
-            const results = await this.api.multiCall<unknown[]>(calls);
+            // FALLBACK LOGIC: Try Multicall, if fail, create skeletons
+            let results: unknown[] | undefined;
+            try {
+                results = await this.api.multiCall<unknown[]>(calls);
+            } catch (err) {
+                console.error('[FleetDataService] MultiCall Batch Failed:', err);
+                // We will handle the missing results in the loop below
+            }
 
             // Process results (5 results per device in SAFE MODE instead of 10)
             const safeModeStride = 5;
@@ -287,7 +293,9 @@ export class FleetDataService {
                 // Defensive check: Ensure we have results for this vehicle
                 // If multicall partial failed, we might have undefined here
                 if (!results || !results[baseIndex]) {
-                    console.error(`[FleetDataService] Missing data for device ${deviceId} at index ${baseIndex}`);
+                    console.warn(`[FleetDataService] Missing enrichment data for device ${deviceId}. Using basic info.`);
+                    // FALLBACK: Push skeleton record so the table isn't empty
+                    vehicleData.push(this.createSkeletonVehicle(statusInfo, deviceId));
                     continue;
                 }
 
@@ -300,7 +308,7 @@ export class FleetDataService {
                 // SAFE MODE DEFAULTS
                 const faults: FaultData[] = [];
                 const trips: Trip[] = [];
-                const dvirDefects: any[] = [];
+                // const dvirDefects: any[] = []; // Unused in Safe Mode
                 const users: any[] = [];
                 const maintenanceReminders: any[] = [];
 
@@ -314,32 +322,6 @@ export class FleetDataService {
                 const stateOfCharge = socData?.[0]?.data; // Real SOC %
                 const chargingState = chargingData?.[0]?.data;
                 const isCharging = chargingState !== undefined && chargingState > 0;
-
-                // DIAGNOSTIC: Track EV SOC reporting patterns (Vivaro-e analysis)
-                const vehicleName = (device?.name || statusInfo.device.name || '').toLowerCase();
-                const licensePlate = device?.licensePlate || device?.name || '';
-                const isVivaroE = vehicleName.includes('vivaro') || vehicleName.includes('ev') || vehicleName.includes('electric');
-
-                if (isVivaroE || stateOfCharge !== undefined) {
-                    console.log(`[EV-DIAG] ${device?.name || statusInfo.device.name} | Serial: ${device?.serialNumber || 'N/A'} | SOC: ${stateOfCharge !== undefined ? stateOfCharge + '%' : 'NO DATA'} | DeviceType: ${device?.deviceType || 'Unknown'}`);
-                }
-
-                // DATA QUALITY: Flag vehicles with SOC data but pre-EV registration
-                // Irish plates: 191D = 2019, 201D = 2020 first half, 202D = 2020 second half
-                // Vivaro-e launched late 2020, so any 191/192/201 with SOC is suspicious
-                if (stateOfCharge !== undefined && licensePlate) {
-                    const plateMatch = licensePlate.match(/^(\d{2})(\d)([A-Z])/i);
-                    if (plateMatch) {
-                        const year = parseInt(plateMatch[1], 10) + 2000;
-                        const halfYear = parseInt(plateMatch[2], 10); // 1 = Jan-Jun, 2 = Jul-Dec
-                        const fullYear = year + (halfYear === 2 ? 0.5 : 0);
-
-                        // Most EVs available from 2020 onwards; Vivaro-e from late 2020
-                        if (fullYear < 2020) {
-                            console.warn(`[DATA-QUALITY] ⚠️ ANOMALY: ${licensePlate} (${year} plate) has SOC=${stateOfCharge}% - EV models weren't available this early!`);
-                        }
-                    }
-                }
 
                 // Calculate service due days from maintenance reminders (currently not available in dev mode)
                 let serviceDueDays: number | undefined = undefined;
@@ -363,59 +345,6 @@ export class FleetDataService {
                 // Find the earliest trip in the current "chain" of trips inside the zone
                 let zoneEntryTime: string | undefined = undefined;
                 let isZoneEntryEstimate = false;
-
-                if (trips && trips.length > 0) {
-                    // Sort by stop time descending (newest first)
-                    const sortedTrips = [...trips].sort((a, b) =>
-                        new Date(b.stop).getTime() - new Date(a.stop).getTime()
-                    );
-
-                    // Iterate backwards through time to find when vehicle arrived
-                    // Logic: Keep going back as long as trips end INSIDE the zone.
-                    // The moment we hit a trip OUTSIDE the zone, we stop.
-                    // The entry time is the stop time of the *first* trip in the contiguous chain.
-
-                    let earliestContiguousInsideTrip = null;
-
-                    for (const trip of sortedTrips) {
-                        if (!trip.stopPoint) continue;
-
-                        const stopInZone = isPointInPolygon(
-                            { x: trip.stopPoint.x, y: trip.stopPoint.y },
-                            zone.points
-                        );
-
-                        if (stopInZone) {
-                            // This trip ended in zone, so it's part of the current stay (candidate)
-                            earliestContiguousInsideTrip = trip;
-                        } else {
-                            // Hit a trip outside zone - chain broken.
-                            // The vehicle arrived AFTER this trip invalidates previous candidacy? 
-                            // No, we are going backwards in time (Newest -> Oldest).
-                            // If we find a trip OUTSIDE, it means the vehicle *entered* the zone after this trip ended.
-                            // So the Chain STOPS here.
-                            break;
-
-                            // Wait: if T_new is In, T_old is Out.
-                            // Then entry time must be around T_new.start or T_old.stop?
-                            // Usually determining exact entry without ExceptionEvents is hard.
-                            // Heuristic: Use T_new.stop? That implies it arrived when it parked.
-                            // If we use T_new.start, it implies it started the trip inside?
-                            // Usually: Arrived -> Parked (Stop).
-                            // So earliestContiguousInsideTrip.stop is a safe conservative estimate.
-                        }
-                    }
-
-                    if (earliestContiguousInsideTrip) {
-                        zoneEntryTime = earliestContiguousInsideTrip.stop;
-                        isZoneEntryEstimate = false;
-                    } else {
-                        // All recent trips were OUTSIDE zone?
-                        // But vehicle IS in device list for zone?
-                        // Can happen if vehicle just entered and hasn't stopped (trip valid/active?).
-                        // Fallback to heartbeat.
-                    }
-                }
 
                 // Fallback: If no trips in 30 days, or no trips in zone found (but vehicle is here)
                 if (!zoneEntryTime) {
@@ -476,51 +405,10 @@ export class FleetDataService {
                 const hasRecurring = hasRecurringIssues(vehicleIssues);
                 const isDeviceOffline = !statusInfo.isDeviceCommunicating;
 
-                // Parse DVIR - Enhanced diagnostic logging
-                const dvirLogs = dvirDefects || [];
-                if (dvirLogs.length > 0) {
-                    console.log(`[DVIR-DIAG] ${device?.name} has ${dvirLogs.length} DVIRLog entries`);
-                    dvirLogs.forEach((log: any, i: number) => {
-                        console.log(`[DVIR-DIAG]   Log ${i}: repairStatus="${log.repairStatus}", defectList count=${log.defectList?.length || 0}, isDefective=${log.isDefective}`);
-                    });
-                }
-
-                // Filter to keep useful defects (defective logs) but INCLUDE repaired ones for history
-                const dvirDefectsList = (dvirLogs)
-                    .filter((log: any) => {
-                        // Keep logs that have defects (even if repaired)
-                        return log.isDefective === true || (log.defectList && log.defectList.length > 0);
-                    })
-                    .sort((a: any, b: any) => new Date(b.dateTime).getTime() - new Date(a.dateTime).getTime()) // Newest first
-                    .map((log: any) => {
-                        const firstDefect = log.defectList?.[0];
-                        const defectName =
-                            log.defectName ||
-                            firstDefect?.defect?.name ||
-                            firstDefect?.name ||
-                            (firstDefect?.part?.name ? `${firstDefect.part.name} - ${firstDefect.defectMode?.name || ''}` : null) ||
-                            'Unspecified Defect';
-
-                        const isRepaired = log.repairStatus === 'Repaired' || log.repairStatus === 'NotNecessary' || !!log.repairedDateTime;
-
-                        return {
-                            id: log.id,
-                            defectName: defectName,
-                            comment: log.comment || log.remarks,
-                            date: log.dateTime,
-                            driverName: log.user?.name || log.driver?.name || 'Unknown Driver',
-                            repairStatus: log.repairStatus || (isRepaired ? 'Repaired' : 'NotRepaired'),
-                            isRepaired: isRepaired,
-                            certifiedBy: log.certifiedBy?.name
-                        };
-                    });
-
-                if (dvirDefectsList.length > 0) {
-                    console.log(`[DVIR-DIAG] ${device?.name} has ${dvirDefectsList.length} defects (including repaired)`);
-                }
-
                 // Calculate active status strictly based on unrepaired items
-                const hasUnrepairedDefects = dvirDefectsList.some((d: any) => !d.isRepaired);
+                // Default clean in Safe Mode
+                const hasUnrepairedDefects = false;
+                const dvirDefectsList: any[] = [];
 
                 vehicleData.push({
                     device: device || { id: deviceId, name: statusInfo.device.name ?? 'Unknown', serialNumber: 'Unknown' },
@@ -650,5 +538,38 @@ export class FleetDataService {
         }
 
         return counts;
+    }
+
+    /**
+     * Helper to create a basic vehicle record from just StatusInfo
+     * Used when enrichment APIs fail or are restricted.
+     */
+    private createSkeletonVehicle(statusInfo: DeviceStatusInfo, deviceId: string): VehicleData {
+        return {
+            device: { id: deviceId, name: statusInfo.device.name ?? 'Unknown', serialNumber: 'Unknown' },
+            status: statusInfo,
+            driverName: '--',
+            makeModel: undefined,
+            batteryVoltage: undefined,
+            fuelLevel: undefined,
+            stateOfCharge: undefined,
+            isCharging: false,
+            dormancyDays: null,
+            zoneEntryTime: statusInfo.dateTime,
+            zoneDurationMs: Math.max(0, Date.now() - new Date(statusInfo.dateTime).getTime()),
+            isZoneEntryEstimate: true,
+            hasCriticalFaults: false,
+            health: {
+                dvir: { isClean: true, defects: [] },
+                issues: [],
+                hasRecurringIssues: false,
+                isDeviceOffline: !statusInfo.isDeviceCommunicating,
+                lastHeartbeat: statusInfo.dateTime,
+            },
+            hasUnrepairedDefects: false,
+            activeFaults: [],
+            lastTrip: undefined,
+            serviceDueDays: undefined,
+        };
     }
 }
