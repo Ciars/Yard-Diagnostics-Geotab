@@ -66,6 +66,25 @@ export function initGeotabPlugin() {
     // Let's register to the generic name AND derived names
     w.geotab.addin.geoyard_diagnostics_final = addinHandler;
     w.geotab.addin.geoyardDiagnosticsFinal = addinHandler;
+    // Explicitly add the v2 version we encouraged the user to create
+    w.geotab.addin.geoyard_diagnostics_final_v2 = addinHandler;
+
+    // DYNAMIC REGISTRATION: Parse the current URL hash to find the actual ID Geotab is using
+    // URL format: .../#addin-my_custom_id-index
+    const hash = window.location.hash;
+    if (hash && hash.includes('addin-')) {
+        const parts = hash.split('addin-');
+        if (parts.length > 1) {
+            // Extract "my_custom_id" from "my_custom_id-index"
+            let id = parts[1];
+            if (id.includes('-index')) {
+                id = id.split('-index')[0];
+            }
+            console.log('[GeotabPlugin] Detected dynamic ID:', id);
+            // Register this ID too
+            w.geotab.addin[id] = addinHandler;
+        }
+    }
 
     // Also hook "tester" just in case the user IS running "tester"
     w.geotab.addin.tester = addinHandler;
