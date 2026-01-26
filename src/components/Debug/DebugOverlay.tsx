@@ -11,9 +11,21 @@ export const DebugOverlay: React.FC = () => {
     const [debugLog, setDebugLog] = useState<string[]>([]);
     const [deviceCount, setDeviceCount] = useState<string>('?');
 
-    const log = (msg: string) => setDebugLog(prev => [msg, ...prev].slice(0, 5));
+    const log = (msg: string) => setDebugLog(prev => [msg, ...prev].slice(0, 10));
 
     useEffect(() => {
+        // Listen for custom debug events from FleetDataService
+        const handleDebugEvent = (e: CustomEvent) => {
+            if (e.detail?.type === 'error') {
+                setError(e.detail.message);
+                log(`❌ ${e.detail.message}`);
+            } else {
+                log(`ℹ️ ${e.detail.message}`);
+            }
+        };
+
+        window.addEventListener('geoyard-debug', handleDebugEvent as EventListener);
+
         const checkEnv = async () => {
             try {
                 // Use new detection methods
@@ -42,6 +54,10 @@ export const DebugOverlay: React.FC = () => {
         };
 
         checkEnv();
+
+        return () => {
+            window.removeEventListener('geoyard-debug', handleDebugEvent as EventListener);
+        };
     }, []);
 
     return (
@@ -49,35 +65,61 @@ export const DebugOverlay: React.FC = () => {
             position: 'fixed',
             bottom: 10,
             right: 10,
-            backgroundColor: 'rgba(0,0,0,0.9)',
+            backgroundColor: 'rgba(0,0,0,0.95)',
             color: '#00ff00',
             padding: '1rem',
             borderRadius: '8px',
             zIndex: 99999,
             fontFamily: 'monospace',
-            fontSize: '12px',
-            maxWidth: '300px',
-            maxHeight: '400px',
+            fontSize: '11px',
+            width: '320px',
+            maxHeight: '500px',
             overflow: 'auto',
-            border: '1px solid #00ff00'
+            border: '2px solid #00ff00',
+            boxShadow: '0 0 10px rgba(0,255,0,0.2)'
         }}>
-            <h3 style={{ margin: '0 0 10px', borderBottom: '1px solid #333' }}>🕵️ Deep Debug</h3>
-            <div><strong>Env:</strong> {envType}</div>
-            <div><strong>Selected Zone:</strong> {selectedZone?.name || 'None'}</div>
-            <div><strong>Vehicles (In Zone):</strong> {vehicles.length}</div>
-            <div><strong>API Test:</strong> {deviceCount}</div>
+            <h3 style={{ margin: '0 0 10px', borderBottom: '1px solid #333', display: 'flex', justifyContent: 'space-between' }}>
+                <span>🕵️ Deep Debug</span>
+                <button onClick={() => { setError(null); setDebugLog([]); }} style={{ cursor: 'pointer', background: 'none', border: 'none', color: '#666' }}>🗑️</button>
+            </h3>
 
-            <div style={{ marginTop: '10px', borderTop: '1px solid #333' }}>
-                <strong>Log:</strong>
-                {debugLog.map((l, i) => <div key={i} style={{ fontSize: '10px' }}>{l}</div>)}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '5px', marginBottom: '10px' }}>
+                <div><strong>Env:</strong> {envType}</div>
+                <div><strong>Zone:</strong> {selectedZone?.name || '-'}</div>
+                <div><strong>Vehicles:</strong> {vehicles.length}</div>
+                <div><strong>API Check:</strong> {deviceCount}</div>
             </div>
 
             {error && (
-                <div style={{ color: 'red', marginTop: '10px' }}>
-                    <strong>LAST ERROR:</strong><br />
+                <div style={{
+                    color: '#ff3333',
+                    marginTop: '10px',
+                    padding: '5px',
+                    border: '1px solid #ff3333',
+                    backgroundColor: 'rgba(255,0,0,0.1)',
+                    wordBreak: 'break-word',
+                    userSelect: 'text'
+                }}>
+                    <strong>⚠️ LAST ERROR:</strong><br />
                     {error}
                 </div>
             )}
+
+            <div style={{ marginTop: '10px', borderTop: '1px solid #333', paddingTop: '5px' }}>
+                <strong>Live Log:</strong>
+                <div style={{ marginTop: '5px', display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                    {debugLog.map((l, i) => (
+                        <div key={i} style={{
+                            fontSize: '10px',
+                            borderBottom: '1px solid #222',
+                            paddingBottom: '2px',
+                            color: l.startsWith('❌') ? '#ff6666' : '#ccffcc'
+                        }}>
+                            {l}
+                        </div>
+                    ))}
+                </div>
+            </div>
         </div>
     );
 };

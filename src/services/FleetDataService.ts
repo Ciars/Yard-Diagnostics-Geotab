@@ -136,7 +136,15 @@ export class FleetDataService {
                     });
                     return result?.[0] || null;
                 } catch (err) {
+                    const errMsg = err instanceof Error ? err.message : String(err);
                     console.warn(`[FleetDataService] Failed to fetch Device identity for ${deviceId}:`, err);
+
+                    // Dispatch debug event for overlay
+                    if (typeof window !== 'undefined') {
+                        window.dispatchEvent(new CustomEvent('geoyard-debug', {
+                            detail: { type: 'error', message: `ID Fetch Fail (${deviceId}): ${errMsg}` }
+                        }));
+                    }
                     return null;
                 }
             });
