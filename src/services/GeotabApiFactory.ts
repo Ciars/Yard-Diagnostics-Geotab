@@ -61,15 +61,24 @@ export class GeotabApiFactory {
     }
 
     /**
-     * Check if we're running inside the Geotab portal
+     * Check if we are potentially in a Geotab environment, even if API isn't ready yet.
      */
-    static isProductionEnvironment(): boolean {
+    static isGeotabContext(): boolean {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const w = window as any;
+        return typeof window !== 'undefined' && (!!w.geotab || !!w.api || (window.self !== window.top && window.location.hostname.includes('geotab.com')));
+    }
+
+    /**
+     * Check if the API is actually ready to use right now
+     */
+    static isApiReady(): boolean {
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const w = window as any;
         return (
-            typeof window !== 'undefined' &&
-            ((w.api && typeof w.api.call === 'function') ||
-                (w.geotab && w.geotab.api && typeof w.geotab.api.call === 'function'))
+            (w.api && typeof w.api.call === 'function') ||
+            (w.geotabApi && typeof w.geotabApi.call === 'function') ||
+            (w.geotab && w.geotab.api && typeof w.geotab.api.call === 'function')
         );
     }
 
@@ -82,22 +91,27 @@ export class GeotabApiFactory {
     }
 
     private static async createInstance(): Promise<IGeotabApi> {
-        if (this.isProductionEnvironment()) {
-            console.log('[GeotabApiFactory] Production mode detected');
-            const { ProductionApiAdapter } = await import('./ProductionApiAdapter');
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            const api = (window as any).geotabApi || (window as any).api || (window as any).geotab?.api;
+        // Logic: If we are in Geotab context, we MUST wait for the API.
+        // Falling back to DevAuthShim in production causes 404s and failures.
 
-            if (!api) {
-                // Fallback: wait a moment? Or just error. 
-                // If isProductionEnvironment is true, one of them MUST be there.
-                console.error('API object missing despite positive env check');
+        if (this.isGeotabContext()) {
+            console.log('[GeotabApiFactory] Geotab context detected. Waiting for API...');
+
+            // Wait up to 10 seconds for the API to appear (handled by plugin)
+            try {
+                const api = await this.waitForApi();
+                console.log('[GeotabApiFactory] API acquired!', api);
+                const { ProductionApiAdapter } = await import('./ProductionApiAdapter');
+                return new ProductionApiAdapter(api);
+            } catch (err) {
+                console.error('[GeotabApiFactory] Failed to acquire API:', err);
+                // Fallthrough to dev mode or throw? Throwing is safer to see the error.
+                throw err;
             }
-            return new ProductionApiAdapter(api);
         }
 
-        // Development mode
-        console.log('[GeotabApiFactory] Development mode - using DevAuthShim');
+        // Development mode (Localhost / Standalone)
+        console.log('[GeotabApiFactory] Non-Geotab context - using DevAuthShim');
         const { DevAuthShim } = await import('./DevAuthShim');
 
         const credentials = {
@@ -108,12 +122,39 @@ export class GeotabApiFactory {
         };
 
         if (!credentials.database || !credentials.userName || !credentials.password) {
-            throw new Error(
-                '[GeotabApiFactory] Missing credentials. ' +
-                'Please configure VITE_GEOTAB_DATABASE, VITE_GEOTAB_USERNAME, and VITE_GEOTAB_PASSWORD in .env.local'
+            console.warn(
+                '[GeotabApiFactory] Missing credentials for Dev Mode. ' +
+                'Please configure .env.local if you are running locally.'
             );
         }
 
         return DevAuthShim.create(credentials);
+    }
+
+    private static waitForApi(): Promise<any> {
+        return new Promise((resolve, reject) => {
+            // Check immediately
+            if (this.isApiReady()) {
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                resolve((window as any).geotabApi || (window as any).api || (window as any).geotab?.api);
+                return;
+            }
+
+            let attempts = 0;
+            const maxAttempts = 100; // 10 seconds (100 * 100ms)
+
+            const interval = setInterval(() => {
+                attempts++;
+                if (this.isApiReady()) {
+                    clearInterval(interval);
+                    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                    resolve((window as any).geotabApi || (window as any).api || (window as any).geotab?.api);
+                } else if (attempts >= maxAttempts) {
+                    clearInterval(interval);
+                    console.error('[GeotabApiFactory] Timeout waiting for Geotab API injection');
+                    reject(new Error('Geotab API not found after 10s timeout'));
+                }
+            }, 100);
+        });
     }
 }

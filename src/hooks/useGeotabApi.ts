@@ -49,6 +49,6 @@ export function useGeotabApi(): UseGeotabApiResult {
         api,
         isLoading,
         error,
-        isProduction: GeotabApiFactory.isProductionEnvironment(),
+        isProduction: GeotabApiFactory.isGeotabContext(),
     };
 }

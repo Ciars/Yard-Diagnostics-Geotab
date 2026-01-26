@@ -11,8 +11,16 @@ export const DebugOverlay: React.FC = () => {
     useEffect(() => {
         const checkEnv = async () => {
             try {
-                const isProd = GeotabApiFactory.isProductionEnvironment();
-                setEnvType(isProd ? 'PRODUCTION (window.api found)' : 'DEVELOPMENT (DevAuthShim)');
+                // Use new detection methods
+                const inContext = GeotabApiFactory.isGeotabContext();
+                const ready = GeotabApiFactory.isApiReady();
+
+                let status = 'UNKNOWN';
+                if (inContext && ready) status = 'PRODUCTION (Ready)';
+                else if (inContext && !ready) status = 'PRODUCTION (Waiting for API...)';
+                else status = 'DEVELOPMENT (Local)';
+
+                setEnvType(status);
 
                 // Inspect window object for debugging
                 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -25,7 +33,7 @@ export const DebugOverlay: React.FC = () => {
                 };
                 setWindowPayload(JSON.stringify(debugInfo, null, 2));
 
-                if (isProd) {
+                if (inContext) {
                     // Test a simple call
                     const api = await GeotabApiFactory.getInstance();
                     const session = await api.getSession();
