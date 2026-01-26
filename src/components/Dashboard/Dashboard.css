@@ -7,8 +7,8 @@
 /* 3-Panel Layout Grid */
 .dashboard {
     display: grid;
-    /* Sidebar | Middle Panel | Right Map (Narrowed) */
-    grid-template-columns: 260px minmax(500px, 2fr) 1fr;
+    /* Sidebar | Middle Panel (Flexible) | Right Map (Fixed-ish) */
+    grid-template-columns: 260px 1fr minmax(200px, 320px);
     height: 100vh;
     background: var(--color-background);
     overflow: hidden;
@@ -20,8 +20,8 @@
     flex-direction: column;
     border-right: 1px solid var(--color-border);
     background: #fff;
-    min-width: 0;
-    /* Critical for scroll container to work in Grid/Flex */
+    min-width: 500px;
+    /* Ensure table has room */
     height: 100%;
     overflow: hidden;
 }
