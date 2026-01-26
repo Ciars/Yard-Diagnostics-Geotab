@@ -17,7 +17,7 @@ import type {
     ApiCall,
     DiagnosticId,
 } from '@/types/geotab';
-import { DiagnosticIds } from '@/types/geotab';
+// import { DiagnosticIds } from '@/types/geotab'; // Unused in Identity Only mode
 import { isPointInPolygon } from '@/lib/geoUtils';
 import { processVehicleIssues, hasRecurringIssues } from './IssueService';
 
@@ -145,14 +145,14 @@ export class FleetDataService {
         // const now = new Date().toISOString();
         // Extend lookback to find all faults and trips for report fidelity (e.g. 1 year)
         // const longAgo = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString();
-        const dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+        // const dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
 
         const vehicleData: VehicleData[] = [];
         const batches = chunk(deviceIds, BATCH_SIZE);
 
         for (const batch of batches) {
             const calls: ApiCall[] = batch.flatMap((deviceId) => [
-                // Get device details
+                // Get device details (Re-enabled: Essential for Name/VIN)
                 {
                     method: 'Get',
                     params: {
@@ -161,6 +161,9 @@ export class FleetDataService {
                         resultsLimit: 1,
                     },
                 },
+
+                // ISOLATION MODE: Commenting out StatusData to find the crash culprit
+                /*
                 // Get latest battery voltage
                 {
                     method: 'Get',
@@ -213,62 +216,10 @@ export class FleetDataService {
                         resultsLimit: 1,
                     },
                 },
-                // SAFE MODE: Commenting out risky calls that might cause permission failures
+                */
+                // SAFE MODE: Risky calls remain commented out until we prove identity works
                 /*
-                // Get active faults
-                {
-                    method: 'Get',
-                    params: {
-                        typeName: 'FaultData',
-                        search: {
-                            deviceSearch: { id: deviceId },
-                            fromDate: longAgo,
-                        },
-                    },
-                },
-                // Get last 10 trips (for zone entry calculation)
-                {
-                    method: 'Get',
-                    params: {
-                        typeName: 'Trip',
-                        search: {
-                            deviceSearch: { id: deviceId },
-                            fromDate: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString(),
-                        },
-                    },
-                },
-                // Get unrepaired DVIR defects
-                {
-                    method: 'Get',
-                    params: {
-                        typeName: 'DVIRLog',
-                        search: {
-                            deviceSearch: { id: deviceId },
-                            fromDate: longAgo,
-                        },
-                    },
-                },
-                // Get Driver User
-                {
-                    method: 'Get',
-                    params: {
-                        typeName: 'User',
-                        search: {
-                            id: statusInfos.find(s => s.device.id === deviceId)?.driver?.id || 'NoDriverId'
-                        },
-                        resultsLimit: 1,
-                    },
-                },
-                // Get maintenance reminders for service due
-                {
-                    method: 'Get',
-                    params: {
-                        typeName: 'MaintenanceReminder',
-                        search: {
-                            deviceSearch: { id: deviceId },
-                        },
-                    },
-                },
+                // Get active faults ...
                 */
             ]);
 
@@ -281,8 +232,8 @@ export class FleetDataService {
                 // We will handle the missing results in the loop below
             }
 
-            // Process results (5 results per device in SAFE MODE instead of 10)
-            const safeModeStride = 5;
+            // Process results (1 result per device in ISOLATION MODE)
+            const safeModeStride = 1;
             for (let i = 0; i < batch.length; i++) {
                 const baseIndex = i * safeModeStride;
                 const deviceId = batch[i];
@@ -300,10 +251,15 @@ export class FleetDataService {
                 }
 
                 const devices = (results[baseIndex] as Device[]) || [];
-                const batteryData = (results[baseIndex + 1] as StatusData[]) || [];
-                const fuelData = (results[baseIndex + 2] as StatusData[]) || [];
-                const socData = (results[baseIndex + 3] as StatusData[]) || [];
-                const chargingData = (results[baseIndex + 4] as StatusData[]) || [];
+                // const batteryData = (results[baseIndex + 1] as StatusData[]) || [];
+                // const fuelData = (results[baseIndex + 2] as StatusData[]) || [];
+                // const socData = (results[baseIndex + 3] as StatusData[]) || [];
+                // const chargingData = (results[baseIndex + 4] as StatusData[]) || [];
+
+                const batteryData: StatusData[] = [];
+                const fuelData: StatusData[] = [];
+                const socData: StatusData[] = [];
+                const chargingData: StatusData[] = [];
 
                 // SAFE MODE DEFAULTS
                 const faults: FaultData[] = [];
