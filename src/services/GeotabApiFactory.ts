@@ -86,7 +86,13 @@ export class GeotabApiFactory {
             console.log('[GeotabApiFactory] Production mode detected');
             const { ProductionApiAdapter } = await import('./ProductionApiAdapter');
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            const api = (window as any).api || (window as any).geotab?.api;
+            const api = (window as any).geotabApi || (window as any).api || (window as any).geotab?.api;
+
+            if (!api) {
+                // Fallback: wait a moment? Or just error. 
+                // If isProductionEnvironment is true, one of them MUST be there.
+                console.error('API object missing despite positive env check');
+            }
             return new ProductionApiAdapter(api);
         }
 
