@@ -19,7 +19,8 @@ import type {
 } from '@/types/geotab';
 // import { DiagnosticIds } from '@/types/geotab'; // Unused in direct string usage
 import { isPointInPolygon } from '@/lib/geoUtils';
-// import { processVehicleIssues, hasRecurringIssues } from './IssueService';
+import { processVehicleIssues, hasRecurringIssues } from './IssueService';
+import { parseChargingStatus } from './ChargingService';
 
 // =============================================================================
 // Constants
@@ -210,9 +211,38 @@ export class FleetDataService {
                     resultsLimit: 1,
                 });
 
+                // 6. Engine Faults (Last 7 Days)
+                const faultCall = this.api.call<FaultData[]>('Get', {
+                    typeName: 'FaultData',
+                    search: {
+                        deviceSearch: { id: deviceId },
+                        fromDate: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
+                    }
+                });
+
+                // 7. Charging State
+                const chargingCall = this.api.call<StatusData[]>('Get', {
+                    typeName: 'StatusData',
+                    search: {
+                        deviceSearch: { id: deviceId },
+                        diagnosticSearch: { id: 'DiagnosticChargingStateId' },
+                        fromDate: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
+                    },
+                    resultsLimit: 1,
+                });
+
+                // 8. Maintenance Reminders
+                const maintenanceCall = this.api.call<any[]>('Get', {
+                    typeName: 'MaintenanceReminder',
+                    search: {
+                        deviceSearch: { id: deviceId },
+                        isCompleted: false,
+                    }
+                });
+
                 // Use allSettled so one failure (e.g. Driver 403) doesn't kill primary data
-                const [fuelRes, socRes, driverRes, dvirRes, tripRes] = await Promise.allSettled([
-                    fuelCall, socCall, driverCall, dvirCall, tripCall
+                const [fuelRes, socRes, driverRes, dvirRes, tripRes, faultRes, chargingRes, maintenanceRes] = await Promise.allSettled([
+                    fuelCall, socCall, driverCall, dvirCall, tripCall, faultCall, chargingCall, maintenanceCall
                 ]);
 
                 return {
@@ -221,6 +251,9 @@ export class FleetDataService {
                     driver: driverRes.status === 'fulfilled' ? driverRes.value : [],
                     dvir: dvirRes.status === 'fulfilled' ? dvirRes.value : [],
                     trip: tripRes.status === 'fulfilled' ? tripRes.value : [],
+                    faults: faultRes.status === 'fulfilled' ? faultRes.value : [],
+                    charging: chargingRes.status === 'fulfilled' ? chargingRes.value : [],
+                    maintenance: maintenanceRes.status === 'fulfilled' ? maintenanceRes.value : [],
                 };
             });
 
@@ -291,14 +324,37 @@ export class FleetDataService {
                 const dormancy = calculateDormancy(latestTrip, statusInfo);
                 const zoneDurationMs = Math.max(0, Math.floor(dormancy.dormancyHours * 3600000));
 
-                const dormancyDays = dormancy.isDormant ? Math.floor(dormancy.dormancyDays) : null;
+                const dormancyDays = dormancy.isDormant ? Math.floor(dormancy.dormancyDays) : 0;
                 const zoneEntryTime = latestTrip?.stop || statusInfo.dateTime;
                 const isZoneEntryEstimate = !latestTrip?.stop;
 
-                const isCharging = false;
-                const hasCriticalFaults = false;
-                const allFaults: FaultData[] = [];
-                const vehicleIssues: any[] = [];
+                // Process Faults
+                const rawFaults = enrichment.faults || [];
+                const vehicleIssues = processVehicleIssues(rawFaults);
+                const hasCriticalFaults = hasRecurringIssues(vehicleIssues);
+
+                // Process Charging
+                const chargingData = enrichment.charging || [];
+                const chargingStatus = parseChargingStatus([...chargingData, ...(enrichment.soc || [])]);
+                const isCharging = chargingStatus.isCharging;
+
+                // Process Maintenance
+                const maintenance = enrichment.maintenance || [];
+                let serviceDueDays: number | undefined = undefined;
+                if (maintenance.length > 0) {
+                    // Simplistic: find minimum due date
+                    const now = new Date();
+                    const dueDates = maintenance
+                        .map((m: any) => m.dueDate ? new Date(m.dueDate).getTime() : null)
+                        .filter((t): t is number => t !== null);
+
+                    if (dueDates.length > 0) {
+                        const minDue = Math.min(...dueDates);
+                        serviceDueDays = Math.ceil((minDue - now.getTime()) / (1000 * 60 * 60 * 24));
+                    }
+                }
+
+                const allFaults: FaultData[] = rawFaults;
 
                 // Decode VIN for Make/Model (Cached check)
                 const vin = device?.vehicleIdentificationNumber;
@@ -333,14 +389,14 @@ export class FleetDataService {
                     health: {
                         dvir: { isClean: !hasUnrepairedDefects && dvirDefectsList.length === 0, defects: dvirDefectsList },
                         issues: vehicleIssues,
-                        hasRecurringIssues: false,
+                        hasRecurringIssues: hasCriticalFaults,
                         isDeviceOffline: !statusInfo.isDeviceCommunicating,
                         lastHeartbeat: statusInfo.dateTime,
                     },
                     hasUnrepairedDefects,
                     activeFaults: allFaults,
                     lastTrip: latestTrip,
-                    serviceDueDays: undefined,
+                    serviceDueDays,
                 });
             }
         }
@@ -400,7 +456,7 @@ export class FleetDataService {
                     hoursSince(v.status.dateTime) > SILENT_THRESHOLD_HOURS
             ).length,
             dormant: vehicles.filter(
-                (v) => v.dormancyDays === null || v.dormancyDays >= DORMANCY_THRESHOLD_DAYS
+                (v) => (v.dormancyDays ?? 0) >= DORMANCY_THRESHOLD_DAYS
             ).length,
             charging: vehicles.filter((v) => v.isCharging).length,
             serviceDue: vehicles.filter(
