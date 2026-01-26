@@ -152,25 +152,25 @@ export class FleetDataService {
             const identityResults = await Promise.all(identityPromises);
 
             // ====================================================================================================
-            // STAGE 2: Enrichment Data (Status, Driver, Fuel) - PARALLEL SETTLED
-            // We fetch enrichment parallel to identity to save time? No, let's keep it sequential for now to be safe.
+            // STAGE 2: Enrichment Data (Status, Driver, Fuel, DVIR) - PARALLEL SETTLED
             // ====================================================================================================
 
             const enrichmentPromises = batch.map(async (deviceId) => {
                 const statusInfo = statusInfos.find(s => s.device.id === deviceId);
                 const driverId = statusInfo?.driver?.id;
 
-                // We define the calls we want to make
+                // 1. Fuel Level %
                 const fuelCall = this.api.call<StatusData[]>('Get', {
                     typeName: 'StatusData',
                     search: {
                         deviceSearch: { id: deviceId },
-                        diagnosticSearch: { id: 'DiagnosticFuelLevelId' }, // FIX: Use Percentage ID, not Total Volume
+                        diagnosticSearch: { id: 'DiagnosticFuelLevelId' },
                         fromDate: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
                     },
                     resultsLimit: 1,
                 });
 
+                // 2. State of Charge %
                 const socCall = this.api.call<StatusData[]>('Get', {
                     typeName: 'StatusData',
                     search: {
@@ -181,24 +181,31 @@ export class FleetDataService {
                     resultsLimit: 1,
                 });
 
+                // 3. Driver/User
                 const driverCall = driverId ? this.api.call<User[]>('Get', {
                     typeName: 'User',
                     search: { id: driverId },
                     resultsLimit: 1
                 }) : Promise.resolve([]);
 
+                // 4. DVIR Logs (Last 7 Days to catch recent unrepaired)
+                const dvirCall = this.api.call<any[]>('Get', { // using any[] as DVIRLog might not be fully typed yet
+                    typeName: 'DVIRLog',
+                    search: {
+                        deviceSearch: { id: deviceId },
+                        fromDate: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
+                    },
+                    resultsLimit: 5,
+                });
+
                 // Use allSettled so one failure (e.g. Driver 403) doesn't kill Fuel
-                const [fuelRes, socRes, driverRes] = await Promise.allSettled([fuelCall, socCall, driverCall]);
+                const [fuelRes, socRes, driverRes, dvirRes] = await Promise.allSettled([fuelCall, socCall, driverCall, dvirCall]);
 
                 return {
                     fuel: fuelRes.status === 'fulfilled' ? fuelRes.value : [],
                     soc: socRes.status === 'fulfilled' ? socRes.value : [],
                     driver: driverRes.status === 'fulfilled' ? driverRes.value : [],
-                    errors: {
-                        fuel: fuelRes.status === 'rejected' ? fuelRes.reason : null,
-                        soc: socRes.status === 'rejected' ? socRes.reason : null,
-                        driver: driverRes.status === 'rejected' ? driverRes.reason : null,
-                    }
+                    dvir: dvirRes.status === 'fulfilled' ? dvirRes.value : [],
                 };
             });
 
@@ -229,21 +236,48 @@ export class FleetDataService {
                     else if (user.name) driverName = user.name;
                 }
 
+                // Process DVIR
+                // Sort by date desc
+                const dvirLogs = (enrichment.dvir || []).sort((a: any, b: any) => new Date(b.dateTime).getTime() - new Date(a.dateTime).getTime());
+                const latestDvir = dvirLogs[0];
+                const dvirDefectsList: any[] = [];
+                let hasUnrepairedDefects = false;
+
+                // Check for defects in the latest log or recent logs
+                // Simplistic logic: if latest log has defects, show them.
+                // Or if any recent log refers to unrepaired ? Geotab DVIR logic is complex.
+                // We'll just show the LATEST report's status.
+                if (latestDvir) {
+                    // defectList is usually a property of DVIRLog
+                    if (latestDvir.defectList && latestDvir.defectList.length > 0) {
+                        hasUnrepairedDefects = latestDvir.repairStatus === 'NotRepaired';
+                        dvirDefectsList.push(...latestDvir.defectList.map((d: any) => ({
+                            id: d.id || 'unknown',
+                            defectName: d.defect?.name || 'Unknown Defect',
+                            comment: latestDvir.comment || '', // Log comment
+                            date: latestDvir.dateTime,
+                            driverName: latestDvir.driver?.name || 'Unknown',
+                            repairStatus: latestDvir.repairStatus
+                        })));
+                    }
+                }
+
                 // Standard Defaults
                 const isCharging = false;
                 const dormancyDays = null;
                 const zoneEntryTime = statusInfo.dateTime;
 
-                // FIX: Ensure positive duration. If entryTime is future, treat as 0 (Just Now)
-                // Use Math.abs if purely displaying magnitude, but logically it should be clamped to 0.
-                const diffMs = Date.now() - new Date(statusInfo.dateTime).getTime();
+                // FIX: Duration Calculation (Redundant Clamp)
+                const now = Date.now();
+                const entry = new Date(statusInfo.dateTime).getTime();
+                // If entry is in future (> now), diff is negative. Math.max(0) fixes it.
+                // If entry is way in past (< now), diff is positive.
+                const diffMs = now - entry;
                 const zoneDurationMs = Math.max(0, diffMs);
 
                 const isZoneEntryEstimate = true;
                 const hasCriticalFaults = false;
-                const hasUnrepairedDefects = false;
                 const allFaults: FaultData[] = [];
-                const dvirDefectsList: any[] = [];
                 const vehicleIssues: any[] = [];
 
                 // Decode VIN for Make/Model (Cached check)
@@ -277,7 +311,7 @@ export class FleetDataService {
                     isZoneEntryEstimate,
                     hasCriticalFaults,
                     health: {
-                        dvir: { isClean: true, defects: dvirDefectsList },
+                        dvir: { isClean: !hasUnrepairedDefects && dvirDefectsList.length === 0, defects: dvirDefectsList },
                         issues: vehicleIssues,
                         hasRecurringIssues: false,
                         isDeviceOffline: !statusInfo.isDeviceCommunicating,
