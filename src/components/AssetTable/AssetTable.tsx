@@ -65,9 +65,13 @@ export function AssetTable({ vehicles, isLoading }: AssetTableProps) {
         // Use pre-calculated, clamped duration from service
         const ms = vehicle.zoneDurationMs ?? 0;
         const hours = ms / (1000 * 60 * 60);
+
+        // If clamped to 0 (future/now), show "Active" to imply communicating
+        if (ms === 0) return 'Active';
+
         const prefix = vehicle.isZoneEntryEstimate ? '~' : '';
 
-        if (hours < 1) return prefix ? '~Now' : 'Just Now';
+        if (hours < 1) return 'Active'; // < 1h is also "Active"
         if (hours < 24) return `${prefix}${Math.round(hours)}h`;
 
         // Cap display at "365d+" if it hits our cap
@@ -174,7 +178,7 @@ export function AssetTable({ vehicles, isLoading }: AssetTableProps) {
                     <Camera size={14} />
                 </div>
                 <button className="asset-table__header-cell col-dur sortable" onClick={() => handleSort('duration')}>
-                    DUR <SortIndicator field="duration" />
+                    UPDATED <SortIndicator field="duration" />
                 </button>
             </div>
 
@@ -206,11 +210,11 @@ export function AssetTable({ vehicles, isLoading }: AssetTableProps) {
                                 <div className="asset-table__cell col-fuel">
                                     {vehicle.fuelLevel !== undefined ? (
                                         <>
-                                            <span className="level-text" style={{ color: getLevelColor(vehicle.fuelLevel) }}>
-                                                {Math.round(vehicle.fuelLevel)}%
+                                            <span className="level-text" style={{ color: getLevelColor(Math.min(100, vehicle.fuelLevel)) }}>
+                                                {Math.round(Math.min(100, vehicle.fuelLevel))}%
                                             </span>
                                             <div className="level-indicator">
-                                                <div className="level-bar" style={{ backgroundColor: getLevelColor(vehicle.fuelLevel), height: `${vehicle.fuelLevel}%` }} />
+                                                <div className="level-bar" style={{ backgroundColor: getLevelColor(Math.min(100, vehicle.fuelLevel)), height: `${Math.min(100, vehicle.fuelLevel)}%` }} />
                                             </div>
                                         </>
                                     ) : (
