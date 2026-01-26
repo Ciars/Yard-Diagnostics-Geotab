@@ -7,8 +7,8 @@
 /* 3-Panel Layout Grid */
 .dashboard {
     display: grid;
-    /* Sidebar | Middle Panel | Right Map */
-    grid-template-columns: 260px minmax(500px, 1.2fr) 1fr;
+    /* Sidebar | Middle Panel | Right Map (Narrowed) */
+    grid-template-columns: 260px minmax(500px, 2fr) 1fr;
     height: 100vh;
     background: var(--color-background);
     overflow: hidden;
