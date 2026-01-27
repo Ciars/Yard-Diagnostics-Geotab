@@ -173,11 +173,12 @@ export class FleetDataService {
 
         // Helper: Batched Per-Device Fetch (for EV Vitals)
         // Fetches 100 records PER DEVICE, ensuring valid history for everyone.
+        // Parallelized to run all batches concurrently for speed.
         const fetchBatchedPerDevice = async (diagnosticId: string, label: string) => {
             const BATCH_SIZE = 50; // 50 devices per multicall
-            const allResults: StatusData[] = [];
+            const chunkPromises: Promise<StatusData[][]>[] = []; // Array of MultiCall results
 
-            // Create chunks
+            // 1. Create Batches
             for (let i = 0; i < vehicles.length; i += BATCH_SIZE) {
                 const chunk = vehicles.slice(i, i + BATCH_SIZE);
                 const calls = chunk.map(d => ({
@@ -193,16 +194,21 @@ export class FleetDataService {
                     }
                 }));
 
-                try {
-                    const chunkResults = await this.api.multiCall<StatusData[][]>(calls);
-                    chunkResults.forEach(r => {
-                        if (Array.isArray(r)) allResults.push(...r);
+                // 2. Execute Batch (Parallel via Promise.all later)
+                const promise = this.api.multiCall<StatusData[][]>(calls)
+                    .catch(e => {
+                        console.warn(`[FleetDataService] Failed batch for ${label} (Chunk ${i})`);
+                        return [] as StatusData[][]; // Return empty for this chunk on failure
                     });
-                } catch (e) {
-                    console.warn(`[FleetDataService] Failed batch for ${label} (Chunk ${i})`);
-                }
+
+                chunkPromises.push(promise);
             }
-            return allResults;
+
+            // 3. Await all batches concurrently
+            const resultsDeep = await Promise.all(chunkPromises);
+
+            // 4. Flatten: [Batch1Result, Batch2Result...] -> [Device1Data, Device2Data...] -> [Status1, Status2...]
+            return resultsDeep.flat().flat();
         };
 
         // 2. Execution
