@@ -147,7 +147,7 @@ export class FleetDataService {
 
         // console.log('[FleetDataService] Fetching global diagnostics (Bulk Scan)...');
 
-        const calls = [
+        const vitalsCalls = [
             // Fuel
             {
                 method: 'Get',
@@ -192,14 +192,17 @@ export class FleetDataService {
                     search: { diagnosticSearch: { id: DiagnosticIds.HV_BATTERY_POWER }, fromDate: fromDateVitals },
                     resultsLimit: 50000
                 }
-            },
+            }
+        ];
+
+        const cameraCalls = [
             // Camera Road
             {
                 method: 'Get',
                 params: {
                     typeName: 'StatusData',
                     search: { diagnosticSearch: { id: DiagnosticIds.CAMERA_STATUS_ROAD }, fromDate: fromDateCameras },
-                    resultsLimit: 50000
+                    resultsLimit: 5000 // Reduced from 50000
                 }
             },
             // Camera Driver
@@ -208,7 +211,7 @@ export class FleetDataService {
                 params: {
                     typeName: 'StatusData',
                     search: { diagnosticSearch: { id: DiagnosticIds.CAMERA_STATUS_DRIVER }, fromDate: fromDateCameras },
-                    resultsLimit: 50000
+                    resultsLimit: 5000
                 }
             },
             // Video Health
@@ -217,7 +220,7 @@ export class FleetDataService {
                 params: {
                     typeName: 'StatusData',
                     search: { diagnosticSearch: { id: DiagnosticIds.VIDEO_DEVICE_HEALTH }, fromDate: fromDateCameras },
-                    resultsLimit: 50000
+                    resultsLimit: 5000
                 }
             },
             // Camera Online
@@ -226,7 +229,7 @@ export class FleetDataService {
                 params: {
                     typeName: 'StatusData',
                     search: { diagnosticSearch: { id: DiagnosticIds.CAMERA_ONLINE }, fromDate: fromDateCameras },
-                    resultsLimit: 50000
+                    resultsLimit: 5000
                 }
             },
             // Camera Vibration
@@ -235,7 +238,7 @@ export class FleetDataService {
                 params: {
                     typeName: 'StatusData',
                     search: { diagnosticSearch: { id: DiagnosticIds.CAMERA_VIBRATION }, fromDate: fromDateCameras },
-                    resultsLimit: 50000
+                    resultsLimit: 5000
                 }
             },
             // Camera Seatbelt
@@ -244,39 +247,39 @@ export class FleetDataService {
                 params: {
                     typeName: 'StatusData',
                     search: { diagnosticSearch: { id: DiagnosticIds.CAMERA_SEATBELT }, fromDate: fromDateCameras },
-                    resultsLimit: 50000
+                    resultsLimit: 5000
                 }
             }
         ];
 
-        try {
-            const results = await this.api.multiCall<StatusData[][]>(calls);
-            return {
-                fuelResults: results[0] || [],
-                socResults: results[1] || [],
-                chargingResults: results[2] || [],
-                acPowerResults: results[3] || [],
-                batteryPowerResults: results[4] || [],
-                cameraResults: [
-                    ...(results[5] || []),
-                    ...(results[6] || []),
-                    ...(results[7] || []),
-                    ...(results[8] || []),
-                    ...(results[9] || []),
-                    ...(results[10] || [])
-                ]
-            };
-        } catch (e) {
-            console.error('[FleetDataService] Global vital fetch failed', e);
-            return {
-                fuelResults: [],
-                socResults: [],
-                chargingResults: [],
-                acPowerResults: [],
-                batteryPowerResults: [],
-                cameraResults: []
-            };
-        }
+        // Execute in parallel batches
+        const vitalsPromise = this.api.multiCall<StatusData[][]>(vitalsCalls).catch(e => {
+            console.error('[FleetDataService] Vitals fetch failed:', e);
+            return [[], [], [], [], []]; // Return empty arrays matching the structure
+        });
+
+        const camerasPromise = this.api.multiCall<StatusData[][]>(cameraCalls).catch(e => {
+            console.error('[FleetDataService] Cameras fetch failed:', e);
+            return [[], [], [], [], [], []]; // Return empty arrays matching the structure
+        });
+
+        const [vitalsResults, cameraResults] = await Promise.all([vitalsPromise, camerasPromise]);
+
+        return {
+            fuelResults: vitalsResults[0] || [],
+            socResults: vitalsResults[1] || [],
+            chargingResults: vitalsResults[2] || [],
+            acPowerResults: vitalsResults[3] || [],
+            batteryPowerResults: vitalsResults[4] || [],
+            cameraResults: [
+                ...(cameraResults[0] || []),
+                ...(cameraResults[1] || []),
+                ...(cameraResults[2] || []),
+                ...(cameraResults[3] || []),
+                ...(cameraResults[4] || []),
+                ...(cameraResults[5] || [])
+            ]
+        };
     }
 
     private mergeData(
