@@ -29,8 +29,8 @@ export function initGeotabPlugin() {
 
     // Standard boilerplate for Geotab drive/addins
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const addinHandler = function (api: any, state: any) {
-        console.log('[GeotabPlugin] Add-in initialized!', api, state);
+    const addinHandler = function (api: any, _state: any) {
+        // console.log('[GeotabPlugin] Add-in initialized!', api, state);
 
         // EXPOSE API GLOBALLY so GeotabApiFactory can find it
         window.geotabApi = api;
@@ -38,18 +38,18 @@ export function initGeotabPlugin() {
         return {
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             initialize: function (api: any, _state: any, callback: () => void) {
-                console.log('[GeotabPlugin] initialize called');
+                // console.log('[GeotabPlugin] initialize called');
                 window.geotabApi = api; // Ensure it's set
                 callback();
             },
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             focus: function (api: any, _state: any) {
-                console.log('[GeotabPlugin] focus called');
+                // console.log('[GeotabPlugin] focus called');
                 window.geotabApi = api;
             },
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             blur: function (_api: any, _state: any) {
-                console.log('[GeotabPlugin] blur called');
+                // console.log('[GeotabPlugin] blur called');
             }
         };
     };
@@ -80,7 +80,7 @@ export function initGeotabPlugin() {
             if (id.includes('-index')) {
                 id = id.split('-index')[0];
             }
-            console.log('[GeotabPlugin] Detected dynamic ID:', id);
+            // console.log('[GeotabPlugin] Detected dynamic ID:', id);
             // Register this ID too
             w.geotab.addin[id] = addinHandler;
         }
@@ -89,5 +89,5 @@ export function initGeotabPlugin() {
     // Also hook "tester" just in case the user IS running "tester"
     w.geotab.addin.tester = addinHandler;
 
-    console.log('[GeotabPlugin] Hooks registered');
+    // console.log('[GeotabPlugin] Hooks registered');
 }

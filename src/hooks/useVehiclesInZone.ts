@@ -31,12 +31,16 @@ export function useVehiclesInZone(zone: Zone | null): UseVehiclesInZoneResult {
         queryKey: queryKeys.vehiclesInZone(zoneId ?? ''),
         queryFn: async () => {
             if (!api || !zone) throw new Error('API or zoneId not available');
+            // console.log(`[useVehiclesInZone] Fetching for Zone: ${zone.id}`);
             const service = new FleetDataService(api);
-            return service.getVehicleDataForZone(zone);
+            const data = await service.getVehicleDataForZone(zone.id);
+            // console.log(`[useVehiclesInZone] Received: ${data.length} vehicles`);
+            return data;
         },
         enabled: !!api && !!zone && !apiLoading,
         refetchInterval: POLLING_INTERVALS.STATUS_DATA,
         refetchIntervalInBackground: false, // Pause when tab hidden
+        staleTime: 30000, // Prevent immediate refetch on re-render (breaks infinite loop)
     });
 
     const setVehicles = useFleetStore((s) => s.setVehicles);

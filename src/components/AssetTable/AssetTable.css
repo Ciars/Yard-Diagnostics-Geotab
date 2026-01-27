@@ -2,28 +2,43 @@
  * Asset Table Styles
  * 
  * Professional, high-density table styling.
+ * Virtualization-ready.
  */
 
+/* Root Container - flex column to hold header + virtual list */
 .asset-table {
     background: #fff;
     border: 1px solid #eef2f6;
     border-radius: 8px;
     overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    /* Ensure it takes full available height from parent */
+    min-height: 600px;
+    /* Safety: Never collapse below usable height, fixes "invisible list" if flex fails */
 }
 
+/* Header Grid */
 .asset-table__header {
     display: grid;
+    /* Grid Definition: Asset, Model, Driver, Fuel, SOC, Icons, Dur */
     grid-template-columns: 180px 1.2fr 1.2fr 0.7fr 0.7fr 0.9fr 1.1fr 0.7fr;
     background: #fff;
     border-bottom: 1px solid #eef2f6;
     padding: 14px 0;
+    /* Reserve scrollbar width to align with body if needed, 
+       but react-window handles this usually if width is passed.
+       Wait, AutoSizer 'width' includes scrollbar space if it's there?
+       Usually better to just let the header be 100% and rows match. */
+    flex-shrink: 0;
 }
 
 .asset-table__header-cell {
     padding: 0 16px;
     font-size: 0.65rem;
     font-weight: 700;
-    color: var(--color-text-muted);
+    color: var(--color-text-muted, #64748b);
     letter-spacing: 0.05rem;
     display: flex;
     align-items: center;
@@ -33,6 +48,7 @@
     border: none;
     cursor: default;
     font-family: inherit;
+    text-align: left;
 }
 
 .asset-table__header-cell.sortable {
@@ -52,20 +68,17 @@
     color: #cbd5e1;
 }
 
-.col-icons {
-    justify-content: space-around;
-    padding: 0 8px;
-}
-
-.col-icons span {
-    font-size: 0.85rem;
-}
-
-.asset-table__body {
-    /* Allow table to grow fully so parent container handles scroll */
+/* Body Container for Virtual List */
+.asset-table__body-container {
+    flex: 1 1 auto;
+    min-height: 0;
+    /* Crucial: prevents flex item from growing with content */
     width: 100%;
+    position: relative;
+    overflow: hidden;
 }
 
+/* Row Grid */
 .asset-table__row {
     width: 100%;
     display: grid;
@@ -75,19 +88,12 @@
     background: transparent;
     border-bottom: 1px solid #f8fafc;
     cursor: pointer;
-    transition: all 0.2s ease;
+    transition: background 0.2s ease;
     align-items: center;
     text-align: left;
     font-family: inherit;
-}
-
-.asset-table__row:hover {
-    background: #f1f5f9;
-}
-
-.asset-table__row--expanded {
-    background: #f1f5f9;
-    border-bottom-color: transparent;
+    height: 58px;
+    /* Should match itemSize for unexpanded */
 }
 
 .asset-table__row:hover {
@@ -96,8 +102,10 @@
 
 .asset-table__row--expanded {
     background: #f1f5f9;
+    border-bottom-color: transparent;
 }
 
+/* Cells */
 .asset-table__cell {
     padding: 0 16px;
     font-size: 0.85rem;
@@ -115,14 +123,10 @@
     gap: 12px;
 }
 
-.chevron {
-    font-size: 0.6rem;
+.chevron-toggle {
+    display: flex;
+    align-items: center;
     color: #94a3b8;
-    transition: transform 0.2s;
-}
-
-.chevron--open {
-    transform: rotate(90deg);
 }
 
 .asset-type-icon {
@@ -144,12 +148,7 @@
     }
 }
 
-.chevron-toggle {
-    display: flex;
-    align-items: center;
-    color: #94a3b8;
-}
-
+/* Fuel & SOC Columns */
 .col-fuel,
 .col-soc {
     display: flex;
@@ -188,12 +187,22 @@
     }
 }
 
-.level-bar {
+.level-indicator {
     width: 4px;
+    height: 16px;
     background: #e2e8f0;
     border-radius: 2px;
+    position: relative;
+    overflow: hidden;
 }
 
+.level-bar {
+    width: 100%;
+    position: absolute;
+    bottom: 0;
+}
+
+/* Icons Column */
 .col-icons {
     display: flex;
     justify-content: space-around;
@@ -213,21 +222,7 @@
     color: #f59e0b;
 }
 
-.level-indicator {
-    width: 4px;
-    height: 16px;
-    background: #e2e8f0;
-    border-radius: 2px;
-    position: relative;
-    overflow: hidden;
-}
-
-.level-bar {
-    width: 100%;
-    position: absolute;
-    bottom: 0;
-}
-
+/* Duration Column */
 .col-dur {
     text-align: right;
     color: #64748b;
@@ -237,100 +232,39 @@
     gap: 4px;
 }
 
-/* Expanded View */
-.asset-table__expanded {
+/* Expanded Content */
+.asset-table__expanded-content {
     background: #fefefe;
-    padding: 24px;
     border-bottom: 2px solid #f1f5f9;
+    /* Animation could be added here but tricky with virtualization */
 }
 
-.expanded-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 20px;
+/* Scrollbar Styling for Virtual List */
+.virtual-list::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
 }
 
-.expanded-title {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-size: 0.8rem;
-    font-weight: 700;
-    color: #475569;
-    letter-spacing: 0.05em;
+.virtual-list::-webkit-scrollbar-track {
+    background: transparent;
 }
 
-.vin-badge {
-    background: #f8fafc;
-    border: 1px solid #e2e8f0;
-    padding: 4px 12px;
+.virtual-list::-webkit-scrollbar-thumb {
+    background: #cbd5e1;
     border-radius: 4px;
-    font-size: 0.7rem;
-    font-family: monospace;
-    color: #64748b;
 }
 
-.diagnostic-table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 0.8rem;
+.virtual-list::-webkit-scrollbar-thumb:hover {
+    background: #94a3b8;
 }
 
-.diagnostic-table th {
-    text-align: left;
-    padding: 8px 12px;
-    color: #94a3b8;
-    font-weight: 600;
-    border-bottom: 1px solid #f1f5f9;
-}
-
-.diagnostic-table td {
-    padding: 12px;
-    border-bottom: 1px solid #f8fafc;
-    color: #475569;
-}
-
-.fault-code {
-    color: #2563eb;
-    font-weight: 600;
-}
-
-.severity-badge {
-    padding: 2px 8px;
-    border-radius: 4px;
-    font-size: 0.65rem;
-    font-weight: 700;
-}
-
-.severity--critical {
-    background: #fee2e2;
-    color: #991b1b;
-}
-
-.severity--medium {
-    background: #fef3c7;
-    color: #92400e;
-}
-
-.severity--low {
-    background: #dcfce7;
-    color: #166534;
-}
-
-.status-badge--active {
-    background: #dcfce7;
-    color: #166534;
-    padding: 2px 8px;
-    border-radius: 4px;
-    font-size: 0.65rem;
-    font-weight: 700;
-}
-
-.no-data {
+/* Empty/Loading States */
+.no-data,
+.asset-table--loading {
+    padding: 40px;
     text-align: center;
-    padding: 40px !important;
     color: #94a3b8;
+    height: 100%;
 }
 
 .skeleton-rows {

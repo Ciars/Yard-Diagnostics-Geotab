@@ -125,6 +125,43 @@ export interface FailureMode {
 // Trips & Movement
 // =============================================================================
 
+// =============================================================================
+// Trips & Movement
+// =============================================================================
+
+export interface ChargeEvent {
+    id: string;
+    device: EntityReference;
+    startTime: string; // ISO date
+    duration?: string; // "d.hh:mm:ss.fffffff"
+    chargeType?: string; // "AC", "DC", "Unknown"
+    startStateOfCharge?: number;
+    endStateOfCharge?: number;
+    energyConsumedKwh?: number;
+    peakPowerKw?: number;
+    location?: Coordinate;
+    tripStop?: string; // ISO date
+}
+
+export interface ExceptionEvent {
+    id: string;
+    activeFrom: string;
+    activeTo?: string; // If 'MaxDate' (2050...) or null, it's active
+    rule: {
+        id: string;
+        name: string;
+    };
+    device: {
+        id: string;
+        name: string;
+    };
+    diagnostic?: { // Sometimes present if rule is fault-based
+        id: string;
+        name: string;
+        code?: string;
+    };
+}
+
 export interface Trip {
     id: string;
     device: EntityReference;
@@ -195,8 +232,20 @@ export const DiagnosticIds = {
     /** EV Range in miles */
     EV_RANGE: 'DiagnosticElectricVehicleRangeId',
 
-    /** Charging state: 0=Not Charging, >0=Charging */
-    CHARGING_STATE: 'DiagnosticChargingStateId',
+    /** Charging state: 0=Not Charging, 1=AC, 2=DC */
+    CHARGING_STATE: 'DiagnosticElectricVehicleChargingStateId',
+
+    /** AC Input Power: >0 implies plugging in (Physics Approach) */
+    AC_INPUT_POWER: 'DiagnosticOnBoardChargerACInputPowerId',
+
+    /** AC Input Voltage: >0 implies plugging in */
+    AC_INPUT_VOLTAGE: 'DiagnosticOnBoardChargerAcInputVoltageId',
+
+    /** HV Battery Power: Negative = Charging/Regen */
+    HV_BATTERY_POWER: 'DiagnosticElectricVehicleBatteryPowerId',
+
+    /** HV Battery Current: Negative = Charging/Regen */
+    HV_BATTERY_CURRENT: 'DiagnosticElectricVehicleBatteryCurrentId',
 
     /** Odometer reading */
     ODOMETER: 'DiagnosticOdometerId',
@@ -207,6 +256,14 @@ export const DiagnosticIds = {
     DEVICE_RESTARTED: 'DiagnosticDeviceRestartId',
     GPS_DISCONNECTED: 'DiagnosticGpsDisconnectedId',
     CAMERA_OBSTRUCTION: 'DiagnosticCameraObstructionId',
+
+    // Camera/Video Connectivity & Health
+    CAMERA_STATUS_ROAD: 'abVlGQsHdkkypYl_qqR648Q',
+    CAMERA_STATUS_DRIVER: 'aVxmItJBs5EWZHWFBo3GNBg',
+    VIDEO_DEVICE_HEALTH: 'aOzdYMcJkw06ft9g4uXvpIA',
+    CAMERA_ONLINE: 'agOuG7rbW8E6XflBF30wmyQ',
+    CAMERA_VIBRATION: 'aFX4DZw7dqkK9KJcgrPS6vw',
+    CAMERA_SEATBELT: 'aKCFX70m_eE2Ob8EZuDXCqQ',
 } as const;
 
 export type DiagnosticId = typeof DiagnosticIds[keyof typeof DiagnosticIds];
@@ -262,6 +319,14 @@ export const GEOTAB_DIAGNOSTIC_MAP: Record<string, string> = {
     'DiagnosticDefFluidLevelLowId': 'Low DEF Fluid (AdBlue)',
     'DiagnosticDpfRegenerationNeededId': 'DPF Regeneration Required',
     'DiagnosticCatalyticConverterEfficiencyId': 'Catalytic Converter Issue',
+
+    // Camera/Video
+    'abVlGQsHdkkypYl_qqR648Q': 'Camera Status (Road)',
+    'aVxmItJBs5EWZHWFBo3GNBg': 'Camera Status (Driver)',
+    'aOzdYMcJkw06ft9g4uXvpIA': 'Video Device Health',
+    'agOuG7rbW8E6XflBF30wmyQ': 'Camera Connectivity',
+    'aFX4DZw7dqkK9KJcgrPS6vw': 'Camera Vibration (Standby)',
+    'aKCFX70m_eE2Ob8EZuDXCqQ': 'Camera Seatbelt Sensing',
 };
 
 /**
@@ -406,11 +471,18 @@ export interface VehicleData {
                 comment?: string;
                 date: string;
                 driverName: string;
-                repairStatus?: string;
+                repairStatus?: string; // Restored
                 isRepaired?: boolean; // New flag for styling
                 certifiedBy?: string;
             }>;
             isClean: boolean;
+        };
+        // New strict fault analysis
+        faultAnalysis?: {
+            items: any[]; // ClassifiedFault[]
+            ongoingCount: number;
+            severeCount: number;
+            historicalCount: number;
         };
         /** Unified issues list - replaces separate telematics/mechanical */
         issues: VehicleIssue[];
@@ -423,6 +495,13 @@ export interface VehicleData {
     activeFaults: FaultData[]; // Keep for backward compat or raw view
     lastTrip?: Trip;
     serviceDueDays?: number;
+    cameraStatus?: {
+        isOnline: boolean;
+        health?: 'good' | 'warning' | 'critical' | 'offline';
+        lastHeartbeat?: string;
+        deviceId?: string;
+        name?: string;
+    };
 }
 
 export type KpiFilterType =

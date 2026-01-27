@@ -91,44 +91,53 @@ export class GeotabApiFactory {
     }
 
     private static async createInstance(): Promise<IGeotabApi> {
-        // Logic: If we are in Geotab context, we MUST wait for the API.
+        // Logic: If we are in Geotab context (and NOT in local dev), we MUST wait for the API.
         // Falling back to DevAuthShim in production causes 404s and failures.
 
+        // Priority: Check if we are explicitly in Dev mode first.
+        const isDev = import.meta.env.DEV;
+
+        if (isDev) {
+            // Development mode (Localhost / Standalone)
+            // console.log('[GeotabApiFactory] Non-Geotab context - using DevAuthShim');
+            const { DevAuthShim } = await import('./DevAuthShim');
+
+            const credentials = {
+                server: import.meta.env.VITE_GEOTAB_SERVER || 'my.geotab.com',
+                database: import.meta.env.VITE_GEOTAB_DATABASE,
+                userName: import.meta.env.VITE_GEOTAB_USERNAME,
+                password: import.meta.env.VITE_GEOTAB_PASSWORD,
+            };
+
+            if (!credentials.database || !credentials.userName || !credentials.password) {
+                console.warn(
+                    '[GeotabApiFactory] Missing credentials for Dev Mode. ' +
+                    'Please configure .env.local if you are running locally.'
+                );
+            }
+
+            return DevAuthShim.create(credentials);
+        }
+
+        // Production Mode
         if (this.isGeotabContext()) {
-            console.log('[GeotabApiFactory] Geotab context detected. Waiting for API...');
+            // console.log('[GeotabApiFactory] Geotab context detected (Production). Waiting for API...');
 
             // Wait up to 10 seconds for the API to appear (handled by plugin)
             try {
                 const api = await this.waitForApi();
-                console.log('[GeotabApiFactory] API acquired!', api);
+                // console.log('[GeotabApiFactory] API acquired!', api);
                 const { ProductionApiAdapter } = await import('./ProductionApiAdapter');
                 return new ProductionApiAdapter(api);
             } catch (err) {
                 console.error('[GeotabApiFactory] Failed to acquire API:', err);
-                // Fallthrough to dev mode or throw? Throwing is safer to see the error.
                 throw err;
             }
         }
 
-        // Development mode (Localhost / Standalone)
-        console.log('[GeotabApiFactory] Non-Geotab context - using DevAuthShim');
-        const { DevAuthShim } = await import('./DevAuthShim');
-
-        const credentials = {
-            server: import.meta.env.VITE_GEOTAB_SERVER || 'my.geotab.com',
-            database: import.meta.env.VITE_GEOTAB_DATABASE,
-            userName: import.meta.env.VITE_GEOTAB_USERNAME,
-            password: import.meta.env.VITE_GEOTAB_PASSWORD,
-        };
-
-        if (!credentials.database || !credentials.userName || !credentials.password) {
-            console.warn(
-                '[GeotabApiFactory] Missing credentials for Dev Mode. ' +
-                'Please configure .env.local if you are running locally.'
-            );
-        }
-
-        return DevAuthShim.create(credentials);
+        // If we reach here, we are in Production build but not in Geotab context.
+        // We cannot fallback to DevAuthShim because we don't have credentials in production build.
+        throw new Error('Geotab API not detected. Please ensure you are running inside MyGeotab or use Development mode.');
     }
 
     private static waitForApi(): Promise<any> {

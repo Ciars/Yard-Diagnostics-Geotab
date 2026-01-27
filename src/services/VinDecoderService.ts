@@ -48,7 +48,7 @@ export class VinDecoderService {
                 }
             }
         } catch (e) {
-            console.warn('[VinDecoder] Cache load failed:', e);
+            // console.warn('[VinDecoder] Cache load failed:', e);
         }
         return {};
     }
@@ -63,7 +63,7 @@ export class VinDecoderService {
                 data: this.cache
             }));
         } catch (e) {
-            console.warn('[VinDecoder] Cache save failed:', e);
+            // console.warn('[VinDecoder] Cache save failed:', e);
         }
     }
 
@@ -97,7 +97,7 @@ export class VinDecoderService {
         // Fetch uncached VINs
         if (vinsToFetch.length > 0) {
             try {
-                console.log(`[VinDecoder] Decoding ${vinsToFetch.length} VINs...`);
+                // console.log(`[VinDecoder] Decoding ${vinsToFetch.length} VINs...`);
 
                 const decoded = await this.api.call<DecodedVin[]>('DecodeVins', {
                     vins: vinsToFetch
@@ -111,10 +111,10 @@ export class VinDecoderService {
                         }
                     }
                     this.saveCache();
-                    console.log(`[VinDecoder] Successfully decoded ${decoded.length} VINs`);
+                    // console.log(`[VinDecoder] Successfully decoded ${decoded.length} VINs`);
                 }
             } catch (error) {
-                console.error('[VinDecoder] DecodeVins API failed:', error);
+                // console.error('[VinDecoder] DecodeVins API failed:', error);
                 // Don't throw - gracefully degrade to showing "--" for make/model
             }
         }

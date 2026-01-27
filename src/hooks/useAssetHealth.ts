@@ -1,0 +1,62 @@
+import { useState, useEffect } from 'react';
+import type { VehicleData, FaultData, ExceptionEvent } from '@/types/geotab';
+import { useGeotabApi } from '@/hooks/useGeotabApi';
+import { FleetDataService } from '@/services/FleetDataService';
+import { classifyFaults, VehicleFaultSummary } from '@/services/FaultService';
+
+interface AssetHealthState {
+    isLoading: boolean;
+    error: string | null;
+    faults: FaultData[];
+    exceptions: ExceptionEvent[];
+    statusData: any[]; // Status logs
+    analysis: VehicleFaultSummary | null;
+}
+
+export function useAssetHealth(vehicle: VehicleData) {
+    const { api } = useGeotabApi();
+    const [state, setState] = useState<AssetHealthState>({
+        isLoading: true,
+        error: null,
+        faults: [],
+        exceptions: [],
+        statusData: [],
+        analysis: null
+    });
+
+    const loadHistory = async () => {
+        if (!api) return;
+        setState(prev => ({ ...prev, isLoading: true, error: null }));
+
+        try {
+            const service = new FleetDataService(api);
+            // console.log(`[useAssetHealth] Fetching deep history for ${vehicle.device.name}...`);
+
+            const { faults, exceptions, statusData } = await service.getAssetHealthDetails(vehicle.device.id);
+
+            const analysis = classifyFaults(faults, exceptions);
+
+            setState({
+                isLoading: false,
+                error: null,
+                faults,
+                exceptions,
+                statusData: statusData || [],
+                analysis
+            });
+        } catch (err) {
+            console.error('[useAssetHealth] Error:', err);
+            setState(prev => ({
+                ...prev,
+                isLoading: false,
+                error: 'Failed to load detailed history.'
+            }));
+        }
+    };
+
+    useEffect(() => {
+        loadHistory();
+    }, [vehicle.device.id, api]);
+
+    return { ...state, loadHistory };
+}

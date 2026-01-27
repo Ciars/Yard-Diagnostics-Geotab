@@ -21,20 +21,25 @@ export function Sidebar() {
     const toggleSidebar = useFleetStore((s) => s.toggleSidebar);
     const setZones = useFleetStore((s) => s.setZones);
 
-    const { zones: apiZones, isLoading } = useZones();
+    const { zones: apiZones, isLoading, error } = useZones();
     const { counts: zoneCounts, isLoading: countsLoading } = useZoneCounts(storeZones);
 
+    // Sync zones from API to Store
     useEffect(() => {
-        if (apiZones.length > 0 && storeZones.length === 0) {
+        if (apiZones.length > 0) {
             setZones(apiZones);
         }
-    }, [apiZones, storeZones.length, setZones]);
+    }, [apiZones, setZones]);
 
     const filteredZones = useMemo(() => {
         const query = searchQuery.toLowerCase().trim();
-        if (!query) return storeZones;
-        return storeZones.filter((zone) =>
-            zone.name.toLowerCase().includes(query)
+        const zones = query
+            ? storeZones.filter((zone) => zone.name.toLowerCase().includes(query))
+            : storeZones;
+
+        // Alphanumeric sort for display
+        return [...zones].sort((a, b) =>
+            a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' })
         );
     }, [storeZones, searchQuery]);
 
@@ -76,6 +81,18 @@ export function Sidebar() {
             <div className="sidebar__list">
                 {isLoading ? (
                     <div className="sidebar__loading">Loading zones...</div>
+                ) : error ? (
+                    <div className="sidebar__error">
+                        <p>Failed to load zones</p>
+                        <small>{(error as Error).message}</small>
+                    </div>
+                ) : filteredZones.length === 0 ? (
+                    <div className="sidebar__empty">
+                        No zones found
+                        <p style={{ fontSize: '0.7rem', marginTop: '0.5rem', color: '#94a3b8' }}>
+                            (API Connected)
+                        </p>
+                    </div>
                 ) : filteredZones.map((zone) => (
                     <button
                         key={zone.id}
@@ -92,6 +109,17 @@ export function Sidebar() {
                     </button>
                 ))}
             </div>
+
+            {/* DEBUG FOOTER - Remove in production */}
+            {import.meta.env.DEV && (
+                <div style={{ padding: '10px', fontSize: '10px', color: '#666', borderTop: '1px solid #333' }}>
+                    <div>API Ready: {apiZones ? 'Yes' : 'No'}</div>
+                    <div>Zones: {apiZones?.length ?? 0}</div>
+                    <div>Store: {storeZones.length}</div>
+                    <div>Loading: {String(isLoading)}</div>
+                    {error && <div style={{ color: 'red' }}>Err: {(error as Error).message}</div>}
+                </div>
+            )}
         </aside>
     );
 }

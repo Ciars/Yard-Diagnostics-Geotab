@@ -13,6 +13,32 @@ import { DiagnosticIds } from '@/types/geotab';
 const LOW_BATTERY_THRESHOLD_VOLTS = 11.8;
 const WARNING_BATTERY_THRESHOLD_VOLTS = 12.2;
 
+const CAMERA_ERROR_MAP: Record<number, string> = {
+    0: 'System Operating Normally',
+    1: 'Video Signal Loss / No Input',
+    2: 'Internal Recording Error',
+    3: 'SD Card / Storage Failure',
+    4: 'Low Voltage / Power Instability',
+    5: 'Lens Obscured / Dirty',
+    10: 'Network Timeout / Connection Reset',
+    99: 'Hardware Fault Detected'
+};
+
+const ROAD_CAMERA_STATUS_MAP: Record<number, string> = {
+    0: 'Decalibrated',
+    1: 'Calibration In Progress',
+    2: 'Calibration Complete',
+    3: 'Adjustment Suggested',
+    4: 'Adjustment Required'
+};
+
+const VIDEO_HEALTH_MAP: Record<number, string> = {
+    0: 'Healthy',
+    1: 'Unstable',
+    2: 'Unhealthy',
+    3: 'Not Working'
+};
+
 export interface HealthStatus {
     hasCriticalFaults: boolean;
     hasUnrepairedDefects: boolean;
@@ -21,6 +47,12 @@ export interface HealthStatus {
     activeFaultCount: number;
     unrepairedDefectCount: number;
     healthScore: 'critical' | 'warning' | 'healthy';
+}
+
+export interface CameraHealth {
+    status: 'good' | 'warning' | 'critical' | 'unknown';
+    message: string;
+    details: string[];
 }
 
 export interface FaultSummary {
@@ -181,4 +213,92 @@ export function formatBatteryVoltage(voltage: number | null): string {
         return 'N/A';
     }
     return `${voltage.toFixed(1)}V`;
+}
+
+/**
+ * Interpret camera-related StatusData
+ */
+export function analyzeCameraDiagnostics(statusData: StatusData[]): CameraHealth {
+    const cameraDiagnostics = [
+        'DiagnosticThirdPartyCameraStatusId',
+        'DiagnosticThirdPartyCameraId',
+        'DiagnosticSurfsightStatusId',
+        'DiagnosticLytxStatusId',
+        'DiagnosticLytxId',
+        DiagnosticIds.CAMERA_STATUS_ROAD,
+        DiagnosticIds.CAMERA_STATUS_DRIVER,
+        DiagnosticIds.VIDEO_DEVICE_HEALTH,
+        DiagnosticIds.CAMERA_ONLINE
+    ];
+
+    const logs = statusData.filter(s => {
+        const id = typeof s.diagnostic === 'string' ? s.diagnostic : s.diagnostic?.id;
+        return cameraDiagnostics.includes(id || '');
+    });
+
+    if (logs.length === 0) {
+        return {
+            status: 'unknown',
+            message: 'No camera reports found',
+            details: []
+        };
+    }
+
+    // Sort by Date Desc
+    logs.sort((a, b) => new Date(b.dateTime).getTime() - new Date(a.dateTime).getTime());
+
+    const details: string[] = [];
+    let status: 'good' | 'warning' | 'critical' = 'good';
+
+    logs.forEach(log => {
+        const id = typeof log.diagnostic === 'string' ? log.diagnostic : log.diagnostic?.id;
+        const value = Math.round(log.data);
+        const time = new Date(log.dateTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+        if (id === 'DiagnosticThirdPartyCameraStatusId' || id === 'DiagnosticSurfsightStatusId' || id === 'DiagnosticLytxStatusId') {
+            const errorDesc = CAMERA_ERROR_MAP[value] || `Error Code ${value}`;
+            if (value !== 0) {
+                status = 'critical';
+                details.push(`[${time}] ${errorDesc}`);
+            } else {
+                details.push(`[${time}] ${errorDesc}`);
+            }
+        }
+
+        if (id === DiagnosticIds.CAMERA_STATUS_ROAD) {
+            const roadStatus = ROAD_CAMERA_STATUS_MAP[value] || `Status ${value}`;
+            if (value === 0 || value === 4) status = 'critical';
+            else if (value === 1 || value === 3) status = (status === 'critical' ? 'critical' : 'warning');
+            details.push(`[${time}] Road Cam: ${roadStatus}`);
+        }
+
+        if (id === DiagnosticIds.VIDEO_DEVICE_HEALTH) {
+            const healthStatus = VIDEO_HEALTH_MAP[value] || `Health Code ${value}`;
+            if (value === 3 || value === 2) status = 'critical';
+            else if (value === 1) status = (status === 'critical' ? 'critical' : 'warning');
+            details.push(`[${time}] Health: ${healthStatus}`);
+        }
+
+        if (id === DiagnosticIds.CAMERA_ONLINE) {
+            if (value === 0) {
+                status = 'critical';
+                details.push(`[${time}] Camera Offline (Diag)`);
+            } else {
+                details.push(`[${time}] Camera Online (Diag)`);
+            }
+        }
+    });
+
+    // Also check for specific camera obstruction diagnostic
+    const obstructionDiag = logs.find(l => (typeof l.diagnostic === 'string' ? l.diagnostic : l.diagnostic?.id) === DiagnosticIds.CAMERA_OBSTRUCTION);
+    if (obstructionDiag && obstructionDiag.data > 0) {
+        status = 'warning';
+        details.push(`[${new Date(obstructionDiag.dateTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}] Lens Obscured/Blocked`);
+    }
+
+    return {
+        status,
+        message: status === 'good' ? 'Camera System Healthy' : (status === 'warning' ? 'Camera Warning' : 'Camera System Error'),
+        details: Array.from(new Set(details)).slice(0, 4) // Unique last 4 reports
+    };
 }

@@ -18,7 +18,7 @@ import './Dashboard.css';
 export function Dashboard() {
     const selectedZoneId = useFleetStore(selectSelectedZoneId);
     const selectedZone = useFleetStore(selectSelectedZone);
-    const setVehicles = useFleetStore((s) => s.setVehicles);
+    // const setVehicles = useFleetStore((s) => s.setVehicles); removed
     const [lastRefreshTime, setLastRefreshTime] = useState<string>('15:20:25');
     const [exporting, setExporting] = useState(false);
 
@@ -32,11 +32,7 @@ export function Dashboard() {
     }, [dataUpdatedAt]);
 
     // Sync vehicles to store for filtering
-    useEffect(() => {
-        if (vehicles.length > 0) {
-            setVehicles(vehicles);
-        }
-    }, [vehicles, setVehicles]);
+    // Sync vehicles to store is handled by useVehiclesInZone hook now
 
     const handleExport = () => {
         if (vehicles.length === 0) return;

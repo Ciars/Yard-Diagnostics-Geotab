@@ -14,6 +14,13 @@
     overflow: hidden;
 }
 
+/* Twice as wide on large screens */
+@media (min-width: 1600px) {
+    .dashboard {
+        grid-template-columns: 280px 1fr 640px;
+    }
+}
+
 /* --- Panel 2: Middle (KPIs + Table) --- */
 .dashboard__middle-panel {
     display: flex;
@@ -46,13 +53,22 @@
 
 .dashboard__scroll-content {
     flex: 1;
-    overflow-y: auto;
+    overflow: hidden;
+    /* Changed from overflow-y: auto to allow table to handle scrolling */
     padding: 24px;
     display: flex;
     flex-direction: column;
     gap: 24px;
     min-height: 0;
     /* Essential for flex scroll */
+}
+
+.dashboard__table-section {
+    flex: 1;
+    min-height: 0;
+    position: relative;
+    display: flex;
+    flex-direction: column;
 }
 
 /* --- Panel 3: Right (Map) --- */

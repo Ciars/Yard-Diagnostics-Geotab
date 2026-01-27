@@ -1,0 +1,300 @@
+/* Asset Health Dashboard - Geotab Replica */
+
+.ah-dashboard {
+    padding: 20px;
+    background-color: #f9fbfc;
+    font-family: 'Roboto', sans-serif;
+    color: #1a2b49;
+    /* Strict Containment for Virtual List */
+    height: 100%;
+    box-sizing: border-box;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+}
+
+/* --- HEADER --- */
+.ah-header {
+    margin-bottom: 24px;
+}
+
+.ah-title-row {
+    display: flex;
+    align-items: baseline;
+    gap: 16px;
+    margin-bottom: 12px;
+}
+
+.ah-title-row h2 {
+    font-size: 20px;
+    font-weight: 700;
+    margin: 0;
+}
+
+.ah-make-model {
+    font-size: 16px;
+    color: #555;
+    font-weight: 500;
+}
+
+.ah-vin {
+    font-size: 14px;
+    color: #888;
+    background: #eee;
+    padding: 2px 6px;
+    border-radius: 4px;
+}
+
+.ah-status-banner {
+    background: white;
+    border: 1px solid #e0e0e0;
+    border-left: 4px solid #10b981;
+    /* Default Success */
+    padding: 16px;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+}
+
+.ah-status-icon {
+    font-size: 20px;
+}
+
+.ah-status-text {
+    display: flex;
+    flex-direction: column;
+}
+
+.ah-status-sub {
+    font-size: 13px;
+    color: #666;
+    margin-top: 2px;
+}
+
+/* --- GRID --- */
+.ah-grid {
+    display: grid;
+    grid-template-columns: 2fr 1fr;
+    /* 66% - 33% */
+    gap: 32px;
+}
+
+.ah-col h3 {
+    font-size: 14px;
+    text-transform: uppercase;
+    color: #555;
+    letter-spacing: 0.5px;
+    margin-top: 0;
+    margin-bottom: 8px;
+}
+
+.ah-divider {
+    border: 0;
+    height: 2px;
+    background: #333;
+    /* Dark divider line like screenshot */
+    width: 60px;
+    /* Short line */
+    margin: 0 0 20px 0;
+}
+
+/* --- CARDS --- */
+.ah-cards-row {
+    display: flex;
+    gap: 20px;
+}
+
+.ah-card {
+    background: white;
+    border: 1px solid #e0e0e0;
+    border-radius: 4px;
+    flex: 1;
+    /* Stretch */
+    display: flex;
+    flex-direction: column;
+}
+
+.ah-card-header {
+    background: #f4f6f8;
+    padding: 12px 16px;
+    border-bottom: 1px solid #eee;
+    font-weight: 600;
+    font-size: 14px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.ah-card-body {
+    padding: 16px;
+    font-size: 14px;
+}
+
+.ah-stat-row {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 12px;
+}
+
+.ah-stat-row .label {
+    color: #555;
+}
+
+.ah-stat-row .value {
+    font-weight: 700;
+    color: #1a2b49;
+}
+
+.ah-divider-mini {
+    height: 1px;
+    background: #eee;
+    margin: 12px 0;
+}
+
+/* FAULT MINI LIST */
+.ah-fault-item {
+    display: flex;
+    flex-direction: column;
+    margin-bottom: 10px;
+    padding: 8px;
+    border-left: 3px solid #ccc;
+    background: #fafafa;
+}
+
+.ah-fault-item.critical,
+.ah-fault-item.severe {
+    border-left-color: #ef4444;
+    background: #fff5f5;
+}
+
+.ah-fault-item.warning {
+    border-left-color: #f59e0b;
+}
+
+.ah-fault-item .code {
+    font-weight: 700;
+    font-size: 11px;
+    background: #e2e8f0;
+    padding: 1px 4px;
+    border-radius: 3px;
+    margin-right: 6px;
+    color: #475569;
+}
+
+.ah-fault-item .desc {
+    font-size: 14px;
+    font-weight: 500;
+    color: #1e293b;
+    line-height: 1.4;
+}
+
+.ah-count-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    background: #ef4444;
+    color: white;
+    font-size: 10px;
+    font-weight: 700;
+    border-radius: 10px;
+    padding: 0 6px;
+    height: 16px;
+    margin-left: 8px;
+    vertical-align: middle;
+}
+
+.ah-fault-item .date {
+    display: block;
+    font-size: 11px;
+    color: #64748b;
+    margin-top: 4px;
+}
+
+.ah-fault-main {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+}
+
+.ah-empty-text {
+    font-style: italic;
+    color: #999;
+}
+
+/* --- DEVICE CARD --- */
+.ah-device-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 16px;
+    padding: 16px;
+    padding-bottom: 0;
+}
+
+.device-type {
+    font-weight: 700;
+    color: #1a2b49;
+}
+
+.device-status-pill {
+    font-size: 12px;
+    font-weight: 600;
+    padding: 4px 8px;
+    border-radius: 12px;
+    background: #d1fae5;
+    color: #065f46;
+}
+
+.device-status-pill.offline {
+    background: #fee2e2;
+    color: #991b1b;
+}
+
+.ah-device-details {
+    padding: 0 16px;
+}
+
+.ah-detail-row {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 10px;
+    font-size: 13px;
+}
+
+.ah-detail-row span {
+    color: #666;
+}
+
+.ah-device-faults-section {
+    margin-top: 16px;
+    border-top: 1px solid #eee;
+    padding: 16px;
+    background-color: #fcfcfc;
+}
+
+.ah-device-faults-section h4 {
+    margin: 0 0 10px 0;
+    font-size: 13px;
+}
+
+.ah-device-fault-row {
+    display: flex;
+    align-items: center;
+    font-size: 13px;
+    gap: 8px;
+    color: #d32f2f;
+    margin-bottom: 4px;
+}
+
+/* RESPONSIVE */
+@media (max-width: 1024px) {
+    .ah-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .ah-cards-row {
+        flex-direction: column;
+    }
+}
