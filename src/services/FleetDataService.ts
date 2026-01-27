@@ -629,7 +629,8 @@ export class FleetDataService {
             search: {
                 deviceSearch: { id: deviceId },
                 fromDate
-            }
+            },
+            resultsLimit: 5000 // Safety Limit
         });
 
         // 2. ExceptionEvents (Rule Violations) - ALL Rules (No Filter)
@@ -638,7 +639,8 @@ export class FleetDataService {
             search: {
                 deviceSearch: { id: deviceId },
                 fromDate
-            }
+            },
+            resultsLimit: 5000 // Safety Limit
         });
 
         // 3. Recent Status Snapshots (Last 7 Days for context)
@@ -659,7 +661,7 @@ export class FleetDataService {
             'DiagnosticLytxStatusId',
             'DiagnosticLytxId',
             'DiagnosticAux1Id'
-        ];
+        ].filter(Boolean); // Safety filter
 
         // Create individual calls for each Diagnostic (MultiCall)
         // Note: Using MultiCall with multiple separate GETs to ensure no mix-up
@@ -676,15 +678,28 @@ export class FleetDataService {
             }
         }));
 
-        // Execute Calls
-        const [faults, exceptions, statusResults] = await Promise.all([
-            faultCall,
-            exceptionCall,
-            this.api.multiCall<StatusData[][]>(statusCalls)
-        ]);
+        // Execute Calls Safely
+        // We split MultiCall from the others so that if it fails (common with strict servers), we still get Faults/Exceptions
+        let faults: FaultData[] = [];
+        let exceptions: ExceptionEvent[] = [];
+        let statusData: StatusData[] = [];
 
-        // Flatten Status Results
-        const statusData = statusResults.flat();
+        try {
+            // Core Data (Critical)
+            [faults, exceptions] = await Promise.all([faultCall, exceptionCall]);
+        } catch (e) {
+            console.error('[FleetDataService] Failed to load core faults/exceptions', e);
+            throw e; // RETHROW: If we can't get faults, the whole view is useless.
+        }
+
+        try {
+            // Context Data (Non-Critical) - Best Effort
+            const statusResults = await this.api.multiCall<StatusData[][]>(statusCalls);
+            statusData = statusResults.flat();
+        } catch (e) {
+            console.error('[FleetDataService] Failed to load status context via MultiCall (continuing gracefully)', e);
+            // Do not throw. We can render the dashboard without these charts/indicators.
+        }
 
         return {
             faults,
