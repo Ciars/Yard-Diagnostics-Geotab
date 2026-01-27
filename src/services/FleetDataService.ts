@@ -254,12 +254,12 @@ export class FleetDataService {
 
         // Execute in parallel batches
         const vitalsPromise = this.api.multiCall<StatusData[][]>(vitalsCalls).catch(e => {
-            console.error('[FleetDataService] Vitals fetch failed:', e);
+            console.error('[FleetDataService] Vitals fetch failed:', e instanceof Error ? e.message : String(e));
             return [[], [], [], [], []]; // Return empty arrays matching the structure
         });
 
         const camerasPromise = this.api.multiCall<StatusData[][]>(cameraCalls).catch(e => {
-            console.error('[FleetDataService] Cameras fetch failed:', e);
+            console.error('[FleetDataService] Cameras fetch failed:', e instanceof Error ? e.message : String(e));
             return [[], [], [], [], [], []]; // Return empty arrays matching the structure
         });
 
