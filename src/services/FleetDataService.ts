@@ -154,7 +154,7 @@ export class FleetDataService {
                 params: {
                     typeName: 'StatusData',
                     search: { diagnosticSearch: { id: DiagnosticIds.FUEL_LEVEL }, fromDate: fromDateVitals },
-                    resultsLimit: 50000
+                    resultsLimit: 5000
                 }
             },
             // SOC
@@ -163,7 +163,7 @@ export class FleetDataService {
                 params: {
                     typeName: 'StatusData',
                     search: { diagnosticSearch: { id: DiagnosticIds.STATE_OF_CHARGE }, fromDate: fromDateVitals },
-                    resultsLimit: 50000
+                    resultsLimit: 5000
                 }
             },
             // Charging State
@@ -172,7 +172,7 @@ export class FleetDataService {
                 params: {
                     typeName: 'StatusData',
                     search: { diagnosticSearch: { id: DiagnosticIds.CHARGING_STATE }, fromDate: fromDateVitals },
-                    resultsLimit: 50000
+                    resultsLimit: 5000
                 }
             },
             // AC Input Power (Option B for Charging)
@@ -181,7 +181,7 @@ export class FleetDataService {
                 params: {
                     typeName: 'StatusData',
                     search: { diagnosticSearch: { id: DiagnosticIds.AC_INPUT_POWER }, fromDate: fromDateVitals },
-                    resultsLimit: 50000
+                    resultsLimit: 5000
                 }
             },
             // HV Battery Power (Option C: Negative = Charging)
@@ -190,7 +190,7 @@ export class FleetDataService {
                 params: {
                     typeName: 'StatusData',
                     search: { diagnosticSearch: { id: DiagnosticIds.HV_BATTERY_POWER }, fromDate: fromDateVitals },
-                    resultsLimit: 50000
+                    resultsLimit: 5000
                 }
             }
         ];
