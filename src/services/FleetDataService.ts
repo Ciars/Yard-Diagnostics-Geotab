@@ -124,7 +124,7 @@ export class FleetDataService {
             // console.log(`[FleetDataService] Core Loaded: ${devices.length} Devices`);
 
             // 2. Fetch Global Vitals & Camera Discovery (Bulk Scan)
-            const vitals = await this.fetchGlobalVitals();
+            const vitals = await this.fetchGlobalVitals(devices);
 
             const result = this.mergeData(devices, statuses, drivers, faults, vitals);
             // console.log(`[FleetDataService] Merged Data: ${result.length} Vehicles`);
@@ -140,34 +140,25 @@ export class FleetDataService {
      * Use 7-day lookback for cameras to catch infrequent reports.
      * Use 24-hour lookback for vitals (Fuel/SOC).
      */
-    public async fetchGlobalVitals() {
+    /**
+     * Fetch global vitals.
+     * Refactored to use "Per-Device Batched" fetching for high-density EV data (SOC, Charging)
+     * to avoid global limit truncation.
+     * Fuel and Cameras remain Global as they are lower density or need full sweep.
+     */
+    public async fetchGlobalVitals(devices: Device[]) {
         const now = Date.now();
         const fromDateVitals = new Date(now - 24 * 60 * 60 * 1000).toISOString();
         const fromDateCameras = new Date(now - 7 * 24 * 60 * 60 * 1000).toISOString();
 
-        // console.log('[FleetDataService] Fetching global diagnostics (Parallel Individual Calls)...');
+        // 1. Identify Vehicles (exclude known cameras to save calls)
+        const vehicles = devices.filter(d => {
+            const name = (d.name || '').toLowerCase();
+            return !(d.deviceType === 'GO9Camera' || name.includes('camera') || name.includes('surfsight') || name.includes('lytx'));
+        });
 
-        // 1. Define Vitals Configs
-        const vitalsConfigs = [
-            { key: 'fuelResults', id: DiagnosticIds.FUEL_LEVEL },
-            { key: 'socResults', id: DiagnosticIds.STATE_OF_CHARGE },
-            { key: 'chargingResults', id: DiagnosticIds.CHARGING_STATE },
-            { key: 'acPowerResults', id: DiagnosticIds.AC_INPUT_POWER },
-            { key: 'batteryPowerResults', id: DiagnosticIds.HV_BATTERY_POWER }
-        ];
-
-        // 2. Define Camera Configs
-        const cameraConfigs = [
-            { key: 'camRoad', id: DiagnosticIds.CAMERA_STATUS_ROAD },
-            { key: 'camDriver', id: DiagnosticIds.CAMERA_STATUS_DRIVER },
-            { key: 'camHealth', id: DiagnosticIds.VIDEO_DEVICE_HEALTH },
-            { key: 'camOnline', id: DiagnosticIds.CAMERA_ONLINE },
-            { key: 'camVib', id: DiagnosticIds.CAMERA_VIBRATION },
-            { key: 'camSeat', id: DiagnosticIds.CAMERA_SEATBELT }
-        ];
-
-        // 3. Helper to create a Safe Request
-        const fetchSafe = async (id: string, fromDate: string, limit: number, label: string) => {
+        // Helper: Global Safe Fetch (for Fuel & Cameras)
+        const fetchGlobalSafe = async (id: string, fromDate: string, limit: number, label: string) => {
             try {
                 return await this.api.call<StatusData[]>('Get', {
                     typeName: 'StatusData',
@@ -175,36 +166,89 @@ export class FleetDataService {
                     resultsLimit: limit
                 });
             } catch (e) {
-                const msg = e instanceof Error ? e.message : String(e);
-                console.warn(`[FleetDataService] Failed to fetch ${label} (${id}): ${msg}`);
-                return [] as StatusData[]; // Return empty array on failure
+                console.warn(`[FleetDataService] Failed global fetch for ${label} (${id})`);
+                return [] as StatusData[];
             }
         };
 
-        // 4. Execute All Requests in Parallel
-        const vitalsPromises = vitalsConfigs.map(c => {
-            // EV Data is very dense (high frequency), so we use a lower limit to prevent timeouts
-            const limit = (c.key === 'fuelResults') ? 5000 : 1000;
-            return fetchSafe(c.id, fromDateVitals, limit, c.key);
-        });
+        // Helper: Batched Per-Device Fetch (for EV Vitals)
+        // Fetches 100 records PER DEVICE, ensuring valid history for everyone.
+        const fetchBatchedPerDevice = async (diagnosticId: string, label: string) => {
+            const BATCH_SIZE = 50; // 50 devices per multicall
+            const allResults: StatusData[] = [];
 
-        const cameraPromises = cameraConfigs.map(c =>
-            fetchSafe(c.id, fromDateCameras, 5000, c.key)
-        );
+            // Create chunks
+            for (let i = 0; i < vehicles.length; i += BATCH_SIZE) {
+                const chunk = vehicles.slice(i, i + BATCH_SIZE);
+                const calls = chunk.map(d => ({
+                    method: 'Get',
+                    params: {
+                        typeName: 'StatusData',
+                        search: {
+                            deviceSearch: { id: d.id },
+                            diagnosticSearch: { id: diagnosticId },
+                            fromDate: fromDateVitals
+                        },
+                        resultsLimit: 100 // Plenty for 24h of one vehicle
+                    }
+                }));
 
-        const [vitalsResults, cameraResults] = await Promise.all([
-            Promise.all(vitalsPromises),
-            Promise.all(cameraPromises)
+                try {
+                    const chunkResults = await this.api.multiCall<StatusData[][]>(calls);
+                    chunkResults.forEach(r => {
+                        if (Array.isArray(r)) allResults.push(...r);
+                    });
+                } catch (e) {
+                    console.warn(`[FleetDataService] Failed batch for ${label} (Chunk ${i})`);
+                }
+            }
+            return allResults;
+        };
+
+        // 2. Execution
+        // Parallelize the Batched Clusters and the Global Calls
+        const [
+            fuelResults,
+            cameraRoad,
+            cameraDriver,
+            cameraHealth,
+            cameraOnline,
+            cameraVib,
+            cameraSeat,
+            // EV Batched
+            socResults,
+            chargingResults,
+            acPowerResults,
+            batteryPowerResults
+        ] = await Promise.all([
+            // Global (Low Density)
+            fetchGlobalSafe(DiagnosticIds.FUEL_LEVEL, fromDateVitals, 5000, 'Fuel'),
+
+            // Global (Cameras - need wide search)
+            fetchGlobalSafe(DiagnosticIds.CAMERA_STATUS_ROAD, fromDateCameras, 5000, 'CamRoad'),
+            fetchGlobalSafe(DiagnosticIds.CAMERA_STATUS_DRIVER, fromDateCameras, 5000, 'CamDriver'),
+            fetchGlobalSafe(DiagnosticIds.VIDEO_DEVICE_HEALTH, fromDateCameras, 5000, 'CamHealth'),
+            fetchGlobalSafe(DiagnosticIds.CAMERA_ONLINE, fromDateCameras, 5000, 'CamOnline'),
+            fetchGlobalSafe(DiagnosticIds.CAMERA_VIBRATION, fromDateCameras, 5000, 'CamVib'),
+            fetchGlobalSafe(DiagnosticIds.CAMERA_SEATBELT, fromDateCameras, 5000, 'CamSeat'),
+
+            // Per-Device Batched (High Density EV)
+            fetchBatchedPerDevice(DiagnosticIds.STATE_OF_CHARGE, 'SOC'),
+            fetchBatchedPerDevice(DiagnosticIds.CHARGING_STATE, 'Charging'),
+            fetchBatchedPerDevice(DiagnosticIds.AC_INPUT_POWER, 'ACPower'),
+            fetchBatchedPerDevice(DiagnosticIds.HV_BATTERY_POWER, 'BatPower')
         ]);
 
-        // 5. Assemble Result
         return {
-            fuelResults: vitalsResults[0],
-            socResults: vitalsResults[1],
-            chargingResults: vitalsResults[2],
-            acPowerResults: vitalsResults[3],
-            batteryPowerResults: vitalsResults[4],
-            cameraResults: cameraResults.flat() // Combine all camera stats into one list
+            fuelResults,
+            socResults,
+            chargingResults,
+            acPowerResults,
+            batteryPowerResults,
+            cameraResults: [
+                ...cameraRoad, ...cameraDriver, ...cameraHealth,
+                ...cameraOnline, ...cameraVib, ...cameraSeat
+            ]
         };
     }
 
