@@ -590,25 +590,30 @@ export class FleetDataService {
             'DiagnosticLytxStatusId',
             'DiagnosticLytxId',
             'DiagnosticAux1Id'
-        ].filter(Boolean); // Safety filter
+        ].filter(Boolean);
 
-        // Create individual calls for each Diagnostic (MultiCall)
-        // Note: Using MultiCall with multiple separate GETs to ensure no mix-up
-        const statusCalls = statusIds.map(id => ({
-            method: 'Get',
-            params: {
-                typeName: 'StatusData',
-                search: {
-                    deviceSearch: { id: deviceId },
-                    diagnosticSearch: { id },
-                    fromDate: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
-                },
-                resultsLimit: 100
+        // Helper for safe individual fetching
+        const fetchSafe = async (id: string, fromDate: string, limit: number) => {
+            try {
+                return await this.api.call<StatusData[]>('Get', {
+                    typeName: 'StatusData',
+                    search: {
+                        deviceSearch: { id: deviceId },
+                        diagnosticSearch: { id },
+                        fromDate
+                    },
+                    resultsLimit: limit
+                });
+            } catch (e) {
+                const msg = e instanceof Error ? e.message : String(e);
+                console.warn(`[FleetDataService] Failed to fetch details for ${id}: ${msg}`);
+                return [] as StatusData[];
             }
-        }));
+        };
+
+        const statusFromDate = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
 
         // Execute Calls Safely
-        // We split MultiCall from the others so that if it fails (common with strict servers), we still get Faults/Exceptions
         let faults: FaultData[] = [];
         let exceptions: ExceptionEvent[] = [];
         let statusData: StatusData[] = [];
@@ -621,13 +626,13 @@ export class FleetDataService {
             throw e; // RETHROW: If we can't get faults, the whole view is useless.
         }
 
+        // Context Data (Non-Critical) - Parallel Individual Calls
         try {
-            // Context Data (Non-Critical) - Best Effort
-            const statusResults = await this.api.multiCall<StatusData[][]>(statusCalls);
+            const statusPromises = statusIds.map(id => fetchSafe(id, statusFromDate, 100));
+            const statusResults = await Promise.all(statusPromises);
             statusData = statusResults.flat();
         } catch (e) {
-            console.error('[FleetDataService] Failed to load status context via MultiCall (continuing gracefully)', e);
-            // Do not throw. We can render the dashboard without these charts/indicators.
+            console.error('[FleetDataService] This should not happen due to fetchSafe, but catching just in case', e);
         }
 
         return {
