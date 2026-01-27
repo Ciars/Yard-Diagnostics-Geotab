@@ -145,140 +145,64 @@ export class FleetDataService {
         const fromDateVitals = new Date(now - 24 * 60 * 60 * 1000).toISOString();
         const fromDateCameras = new Date(now - 7 * 24 * 60 * 60 * 1000).toISOString();
 
-        // console.log('[FleetDataService] Fetching global diagnostics (Bulk Scan)...');
+        // console.log('[FleetDataService] Fetching global diagnostics (Parallel Individual Calls)...');
 
-        const vitalsCalls = [
-            // Fuel
-            {
-                method: 'Get',
-                params: {
-                    typeName: 'StatusData',
-                    search: { diagnosticSearch: { id: DiagnosticIds.FUEL_LEVEL }, fromDate: fromDateVitals },
-                    resultsLimit: 5000
-                }
-            },
-            // SOC
-            {
-                method: 'Get',
-                params: {
-                    typeName: 'StatusData',
-                    search: { diagnosticSearch: { id: DiagnosticIds.STATE_OF_CHARGE }, fromDate: fromDateVitals },
-                    resultsLimit: 5000
-                }
-            },
-            // Charging State
-            {
-                method: 'Get',
-                params: {
-                    typeName: 'StatusData',
-                    search: { diagnosticSearch: { id: DiagnosticIds.CHARGING_STATE }, fromDate: fromDateVitals },
-                    resultsLimit: 5000
-                }
-            },
-            // AC Input Power (Option B for Charging)
-            {
-                method: 'Get',
-                params: {
-                    typeName: 'StatusData',
-                    search: { diagnosticSearch: { id: DiagnosticIds.AC_INPUT_POWER }, fromDate: fromDateVitals },
-                    resultsLimit: 5000
-                }
-            },
-            // HV Battery Power (Option C: Negative = Charging)
-            {
-                method: 'Get',
-                params: {
-                    typeName: 'StatusData',
-                    search: { diagnosticSearch: { id: DiagnosticIds.HV_BATTERY_POWER }, fromDate: fromDateVitals },
-                    resultsLimit: 5000
-                }
-            }
+        // 1. Define Vitals Configs
+        const vitalsConfigs = [
+            { key: 'fuelResults', id: DiagnosticIds.FUEL_LEVEL },
+            { key: 'socResults', id: DiagnosticIds.STATE_OF_CHARGE },
+            { key: 'chargingResults', id: DiagnosticIds.CHARGING_STATE },
+            { key: 'acPowerResults', id: DiagnosticIds.AC_INPUT_POWER },
+            { key: 'batteryPowerResults', id: DiagnosticIds.HV_BATTERY_POWER }
         ];
 
-        const cameraCalls = [
-            // Camera Road
-            {
-                method: 'Get',
-                params: {
-                    typeName: 'StatusData',
-                    search: { diagnosticSearch: { id: DiagnosticIds.CAMERA_STATUS_ROAD }, fromDate: fromDateCameras },
-                    resultsLimit: 5000 // Reduced from 50000
-                }
-            },
-            // Camera Driver
-            {
-                method: 'Get',
-                params: {
-                    typeName: 'StatusData',
-                    search: { diagnosticSearch: { id: DiagnosticIds.CAMERA_STATUS_DRIVER }, fromDate: fromDateCameras },
-                    resultsLimit: 5000
-                }
-            },
-            // Video Health
-            {
-                method: 'Get',
-                params: {
-                    typeName: 'StatusData',
-                    search: { diagnosticSearch: { id: DiagnosticIds.VIDEO_DEVICE_HEALTH }, fromDate: fromDateCameras },
-                    resultsLimit: 5000
-                }
-            },
-            // Camera Online
-            {
-                method: 'Get',
-                params: {
-                    typeName: 'StatusData',
-                    search: { diagnosticSearch: { id: DiagnosticIds.CAMERA_ONLINE }, fromDate: fromDateCameras },
-                    resultsLimit: 5000
-                }
-            },
-            // Camera Vibration
-            {
-                method: 'Get',
-                params: {
-                    typeName: 'StatusData',
-                    search: { diagnosticSearch: { id: DiagnosticIds.CAMERA_VIBRATION }, fromDate: fromDateCameras },
-                    resultsLimit: 5000
-                }
-            },
-            // Camera Seatbelt
-            {
-                method: 'Get',
-                params: {
-                    typeName: 'StatusData',
-                    search: { diagnosticSearch: { id: DiagnosticIds.CAMERA_SEATBELT }, fromDate: fromDateCameras },
-                    resultsLimit: 5000
-                }
-            }
+        // 2. Define Camera Configs
+        const cameraConfigs = [
+            { key: 'camRoad', id: DiagnosticIds.CAMERA_STATUS_ROAD },
+            { key: 'camDriver', id: DiagnosticIds.CAMERA_STATUS_DRIVER },
+            { key: 'camHealth', id: DiagnosticIds.VIDEO_DEVICE_HEALTH },
+            { key: 'camOnline', id: DiagnosticIds.CAMERA_ONLINE },
+            { key: 'camVib', id: DiagnosticIds.CAMERA_VIBRATION },
+            { key: 'camSeat', id: DiagnosticIds.CAMERA_SEATBELT }
         ];
 
-        // Execute in parallel batches
-        const vitalsPromise = this.api.multiCall<StatusData[][]>(vitalsCalls).catch(e => {
-            console.error('[FleetDataService] Vitals fetch failed:', e instanceof Error ? e.message : String(e));
-            return [[], [], [], [], []]; // Return empty arrays matching the structure
-        });
+        // 3. Helper to create a Safe Request
+        const fetchSafe = async (id: string, fromDate: string, limit: number, label: string) => {
+            try {
+                return await this.api.call<StatusData[]>('Get', {
+                    typeName: 'StatusData',
+                    search: { diagnosticSearch: { id }, fromDate },
+                    resultsLimit: limit
+                });
+            } catch (e) {
+                const msg = e instanceof Error ? e.message : String(e);
+                console.warn(`[FleetDataService] Failed to fetch ${label} (${id}): ${msg}`);
+                return [] as StatusData[]; // Return empty array on failure
+            }
+        };
 
-        const camerasPromise = this.api.multiCall<StatusData[][]>(cameraCalls).catch(e => {
-            console.error('[FleetDataService] Cameras fetch failed:', e instanceof Error ? e.message : String(e));
-            return [[], [], [], [], [], []]; // Return empty arrays matching the structure
-        });
+        // 4. Execute All Requests in Parallel
+        const vitalsPromises = vitalsConfigs.map(c =>
+            fetchSafe(c.id, fromDateVitals, 5000, c.key)
+        );
 
-        const [vitalsResults, cameraResults] = await Promise.all([vitalsPromise, camerasPromise]);
+        const cameraPromises = cameraConfigs.map(c =>
+            fetchSafe(c.id, fromDateCameras, 5000, c.key)
+        );
 
+        const [vitalsResults, cameraResults] = await Promise.all([
+            Promise.all(vitalsPromises),
+            Promise.all(cameraPromises)
+        ]);
+
+        // 5. Assemble Result
         return {
-            fuelResults: vitalsResults[0] || [],
-            socResults: vitalsResults[1] || [],
-            chargingResults: vitalsResults[2] || [],
-            acPowerResults: vitalsResults[3] || [],
-            batteryPowerResults: vitalsResults[4] || [],
-            cameraResults: [
-                ...(cameraResults[0] || []),
-                ...(cameraResults[1] || []),
-                ...(cameraResults[2] || []),
-                ...(cameraResults[3] || []),
-                ...(cameraResults[4] || []),
-                ...(cameraResults[5] || [])
-            ]
+            fuelResults: vitalsResults[0],
+            socResults: vitalsResults[1],
+            chargingResults: vitalsResults[2],
+            acPowerResults: vitalsResults[3],
+            batteryPowerResults: vitalsResults[4],
+            cameraResults: cameraResults.flat() // Combine all camera stats into one list
         };
     }
 
