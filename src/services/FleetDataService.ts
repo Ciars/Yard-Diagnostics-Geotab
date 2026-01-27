@@ -171,43 +171,49 @@ export class FleetDataService {
             }
         };
 
-        // Helper: Batched Per-Device Fetch (for EV Vitals)
-        // Parallelized with Concurrency Limit to prevent network flooding (ERR_INSUFFICIENT_RESOURCES)
-        const fetchBatchedPerDevice = async (diagnosticId: string, label: string) => {
+        // Helper: Combined EV Batch Fetch (Single Pass)
+        // Fetches SOC, Charging, AC, Battery in one go per vehicle to minimize requests.
+        // Reduces request volume by 75% compared to running them separately.
+        const fetchCombinedEVMets = async () => {
             const BATCH_SIZE = 50;
-            const CONCURRENCY_LIMIT = 5; // Run max 5 batches at once
-
-            // Simple Concurrency Limiter
-            // const limit = <T>(fn: () => Promise<T>) => {
-            //     // (Simplified implementation via mapping with index modulo or using a counter is complex inline)
-            //     // Using a clearer "Chunking the Chunks" approach for simplicity and stability without extra libraries:
-            //     return fn();
-            // };
-
-            // Better Approach: Process "Super-Chunks" of promises
-            // e.g. Process 5 chunks, wait, process next 5
+            const CONCURRENCY_LIMIT = 5;
             const allResults: StatusData[] = [];
 
-            // Create all Batch Configs first
+            const targetDiags = [
+                DiagnosticIds.STATE_OF_CHARGE,
+                DiagnosticIds.CHARGING_STATE,
+                DiagnosticIds.AC_INPUT_POWER,
+                DiagnosticIds.HV_BATTERY_POWER
+            ];
+
+            // 1. Create Batches
             const batchConfigs: { calls: any[], index: number }[] = [];
             for (let i = 0; i < vehicles.length; i += BATCH_SIZE) {
                 const chunk = vehicles.slice(i, i + BATCH_SIZE);
-                const calls = chunk.map(d => ({
-                    method: 'Get',
-                    params: {
-                        typeName: 'StatusData',
-                        search: {
-                            deviceSearch: { id: d.id },
-                            diagnosticSearch: { id: diagnosticId },
-                            fromDate: fromDateVitals
-                        },
-                        resultsLimit: 100
-                    }
-                }));
+                const calls: any[] = [];
+
+                // For each vehicle, ask for all 4 metrics at once
+                chunk.forEach(d => {
+                    targetDiags.forEach(diagId => {
+                        calls.push({
+                            method: 'Get',
+                            params: {
+                                typeName: 'StatusData',
+                                search: {
+                                    deviceSearch: { id: d.id },
+                                    diagnosticSearch: { id: diagId },
+                                    fromDate: fromDateVitals
+                                },
+                                resultsLimit: 100
+                            }
+                        });
+                    });
+                });
+
                 batchConfigs.push({ calls, index: i });
             }
 
-            // Execute in Super-Batches (Concurrency Control)
+            // 2. Execute in Super-Batches (Concurrency Control)
             for (let i = 0; i < batchConfigs.length; i += CONCURRENCY_LIMIT) {
                 const currentBatch = batchConfigs.slice(i, i + CONCURRENCY_LIMIT);
 
@@ -216,12 +222,11 @@ export class FleetDataService {
                         .then(res => res.flat())
                         .catch(e => {
                             const msg = e instanceof Error ? e.message : String(e);
-                            console.warn(`[FleetDataService] Failed batch for ${label} (Index ${config.index}): ${msg}`);
+                            console.warn(`[FleetDataService] Failed combined EV batch (Index ${config.index}): ${msg}`);
                             return [] as StatusData[];
                         })
                 );
 
-                // Wait for this set of 5 to finish before starting the next 5
                 const results = await Promise.all(promises);
                 results.forEach(r => allResults.push(...r));
             }
@@ -230,7 +235,7 @@ export class FleetDataService {
         };
 
         // 2. Execution
-        // Parallelize the Batched Clusters and the Global Calls
+        // Parallelize Global Calls + One Big EV Batch
         const [
             fuelResults,
             cameraRoad,
@@ -239,16 +244,13 @@ export class FleetDataService {
             cameraOnline,
             cameraVib,
             cameraSeat,
-            // EV Batched
-            socResults,
-            chargingResults,
-            acPowerResults,
-            batteryPowerResults
+            // Combined EV Results
+            evResults
         ] = await Promise.all([
             // Global (Low Density)
             fetchGlobalSafe(DiagnosticIds.FUEL_LEVEL, fromDateVitals, 5000, 'Fuel'),
 
-            // Global (Cameras - need wide search)
+            // Global (Cameras)
             fetchGlobalSafe(DiagnosticIds.CAMERA_STATUS_ROAD, fromDateCameras, 5000, 'CamRoad'),
             fetchGlobalSafe(DiagnosticIds.CAMERA_STATUS_DRIVER, fromDateCameras, 5000, 'CamDriver'),
             fetchGlobalSafe(DiagnosticIds.VIDEO_DEVICE_HEALTH, fromDateCameras, 5000, 'CamHealth'),
@@ -256,12 +258,17 @@ export class FleetDataService {
             fetchGlobalSafe(DiagnosticIds.CAMERA_VIBRATION, fromDateCameras, 5000, 'CamVib'),
             fetchGlobalSafe(DiagnosticIds.CAMERA_SEATBELT, fromDateCameras, 5000, 'CamSeat'),
 
-            // Per-Device Batched (High Density EV)
-            fetchBatchedPerDevice(DiagnosticIds.STATE_OF_CHARGE, 'SOC'),
-            fetchBatchedPerDevice(DiagnosticIds.CHARGING_STATE, 'Charging'),
-            fetchBatchedPerDevice(DiagnosticIds.AC_INPUT_POWER, 'ACPower'),
-            fetchBatchedPerDevice(DiagnosticIds.HV_BATTERY_POWER, 'BatPower')
+            // Combined EV Batch (High Efficiency)
+            fetchCombinedEVMets()
         ]);
+
+        // Split Combined Results
+        const getDiagId = (d: StatusData) => typeof d.diagnostic === 'string' ? d.diagnostic : d.diagnostic.id;
+
+        const socResults = evResults.filter(d => getDiagId(d) === DiagnosticIds.STATE_OF_CHARGE);
+        const chargingResults = evResults.filter(d => getDiagId(d) === DiagnosticIds.CHARGING_STATE);
+        const acPowerResults = evResults.filter(d => getDiagId(d) === DiagnosticIds.AC_INPUT_POWER);
+        const batteryPowerResults = evResults.filter(d => getDiagId(d) === DiagnosticIds.HV_BATTERY_POWER);
 
         return {
             fuelResults,
