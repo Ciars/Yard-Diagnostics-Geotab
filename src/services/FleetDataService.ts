@@ -172,13 +172,24 @@ export class FleetDataService {
         };
 
         // Helper: Batched Per-Device Fetch (for EV Vitals)
-        // Fetches 100 records PER DEVICE, ensuring valid history for everyone.
-        // Parallelized to run all batches concurrently for speed.
+        // Parallelized with Concurrency Limit to prevent network flooding (ERR_INSUFFICIENT_RESOURCES)
         const fetchBatchedPerDevice = async (diagnosticId: string, label: string) => {
-            const BATCH_SIZE = 50; // 50 devices per multicall
-            const chunkPromises: Promise<StatusData[][]>[] = []; // Array of MultiCall results
+            const BATCH_SIZE = 50;
+            const CONCURRENCY_LIMIT = 5; // Run max 5 batches at once
 
-            // 1. Create Batches
+            // Simple Concurrency Limiter
+            // const limit = <T>(fn: () => Promise<T>) => {
+            //     // (Simplified implementation via mapping with index modulo or using a counter is complex inline)
+            //     // Using a clearer "Chunking the Chunks" approach for simplicity and stability without extra libraries:
+            //     return fn();
+            // };
+
+            // Better Approach: Process "Super-Chunks" of promises
+            // e.g. Process 5 chunks, wait, process next 5
+            const allResults: StatusData[] = [];
+
+            // Create all Batch Configs first
+            const batchConfigs: { calls: any[], index: number }[] = [];
             for (let i = 0; i < vehicles.length; i += BATCH_SIZE) {
                 const chunk = vehicles.slice(i, i + BATCH_SIZE);
                 const calls = chunk.map(d => ({
@@ -190,25 +201,32 @@ export class FleetDataService {
                             diagnosticSearch: { id: diagnosticId },
                             fromDate: fromDateVitals
                         },
-                        resultsLimit: 100 // Plenty for 24h of one vehicle
+                        resultsLimit: 100
                     }
                 }));
-
-                // 2. Execute Batch (Parallel via Promise.all later)
-                const promise = this.api.multiCall<StatusData[][]>(calls)
-                    .catch(e => {
-                        console.warn(`[FleetDataService] Failed batch for ${label} (Chunk ${i})`);
-                        return [] as StatusData[][]; // Return empty for this chunk on failure
-                    });
-
-                chunkPromises.push(promise);
+                batchConfigs.push({ calls, index: i });
             }
 
-            // 3. Await all batches concurrently
-            const resultsDeep = await Promise.all(chunkPromises);
+            // Execute in Super-Batches (Concurrency Control)
+            for (let i = 0; i < batchConfigs.length; i += CONCURRENCY_LIMIT) {
+                const currentBatch = batchConfigs.slice(i, i + CONCURRENCY_LIMIT);
 
-            // 4. Flatten: [Batch1Result, Batch2Result...] -> [Device1Data, Device2Data...] -> [Status1, Status2...]
-            return resultsDeep.flat().flat();
+                const promises = currentBatch.map(config =>
+                    this.api.multiCall<StatusData[][]>(config.calls)
+                        .then(res => res.flat())
+                        .catch(e => {
+                            const msg = e instanceof Error ? e.message : String(e);
+                            console.warn(`[FleetDataService] Failed batch for ${label} (Index ${config.index}): ${msg}`);
+                            return [] as StatusData[];
+                        })
+                );
+
+                // Wait for this set of 5 to finish before starting the next 5
+                const results = await Promise.all(promises);
+                results.forEach(r => allResults.push(...r));
+            }
+
+            return allResults;
         };
 
         // 2. Execution
