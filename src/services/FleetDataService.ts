@@ -182,9 +182,11 @@ export class FleetDataService {
         };
 
         // 4. Execute All Requests in Parallel
-        const vitalsPromises = vitalsConfigs.map(c =>
-            fetchSafe(c.id, fromDateVitals, 5000, c.key)
-        );
+        const vitalsPromises = vitalsConfigs.map(c => {
+            // EV Data is very dense (high frequency), so we use a lower limit to prevent timeouts
+            const limit = (c.key === 'fuelResults') ? 5000 : 1000;
+            return fetchSafe(c.id, fromDateVitals, limit, c.key);
+        });
 
         const cameraPromises = cameraConfigs.map(c =>
             fetchSafe(c.id, fromDateCameras, 5000, c.key)
