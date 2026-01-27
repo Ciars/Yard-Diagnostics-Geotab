@@ -46,10 +46,11 @@ export function useAssetHealth(vehicle: VehicleData) {
             });
         } catch (err) {
             console.error('[useAssetHealth] Error:', err);
+            const msg = err instanceof Error ? err.message : String(err);
             setState(prev => ({
                 ...prev,
                 isLoading: false,
-                error: 'Failed to load detailed history.'
+                error: `Failed to load detailed history: ${msg}`
             }));
         }
     };
