@@ -89,7 +89,8 @@ export class FleetDataService {
      * Fetch complete fleet data with parallel calls
      */
     async getFleetData(): Promise<VehicleData[]> {
-        // 1. Core Lists (Devices & Status) - Global Fetch
+        // 1. Core Lists (Global Fetch)
+        // We get the current snapshot of the entire fleet.
         const deviceCall = this.api.call<Device[]>('Get', {
             typeName: 'Device',
             resultsLimit: 50000
@@ -121,53 +122,41 @@ export class FleetDataService {
                 faultCall
             ]);
 
-            // [DEBUG-PROBE] Run probes for Q2 and Q3
-            if (devices.length > 0) {
-                const probeId = devices[0].id; // Use first available device
-                console.log(`[PROBE] Starting Diagnostic Probe for Device: ${probeId}`);
+            // 2. "Silent Asset" Optimization
+            // Goal: Avoid making 4,500+ API calls for data we already have.
+            // Active vehicles usually have Fuel/SOC in their DeviceStatusInfo snapshot.
+            // We only need to batch-fetch history for vehicles where this data is MISSING.
 
-                // Question 2: Verify Camera Data Exists (DiagnosticCameraStatusRoadId)
-                // If this fails, the ID invalidates the whole batch.
-                this.api.call('Get', {
-                    typeName: 'StatusData',
-                    search: {
-                        deviceSearch: { id: probeId },
-                        diagnosticSearch: { id: DiagnosticIds.CAMERA_STATUS_ROAD },
-                        fromDate: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
-                    },
-                    resultsLimit: 1
-                }).then(res => {
-                    console.log('--- QUESTION 2 RESULT (Validity Check) ---');
-                    console.log('Returned:', JSON.stringify(res, null, 2));
-                }).catch(err => {
-                    console.error('--- QUESTION 2 FAILED (Invalid ID?) ---', err);
-                });
+            const statusMap = new Map<string, DeviceStatusInfo>();
+            statuses.forEach(s => statusMap.set(s.device.id, s));
 
-                // Question 3: DeviceStatusInfo Reality Check
-                // Does it contain Fuel/SOC for active vehicles?
-                this.api.call('Get', {
-                    typeName: 'DeviceStatusInfo',
-                    search: { deviceSearch: { id: probeId } }
-                }).then(res => {
-                    console.log('--- QUESTION 3 RESULT (DeviceStatusInfo) ---');
-                    if (Array.isArray(res) && res.length > 0 && res[0].statusData) {
-                        const ids = res[0].statusData.map((d: any) => typeof d.diagnostic === 'object' ? d.diagnostic.id : d.diagnostic);
-                        console.log('DeviceStatusInfo contains diagnostics:', ids);
-                        console.log('Has Fuel?', ids.includes(DiagnosticIds.FUEL_LEVEL));
-                        console.log('Has SOC?', ids.includes(DiagnosticIds.STATE_OF_CHARGE));
-                    } else {
-                        console.log('DeviceStatusInfo has NO statusData.');
-                    }
-                }).catch(err => {
-                    console.error('--- QUESTION 3 FAILED ---', err);
-                });
-            }
+            const silentDevices = devices.filter(d => {
+                const s = statusMap.get(d.id);
+                if (!s || !s.statusData) return true; // No status info? Definitely silent/missing.
 
-            // 2. Fetch ALL Diagnostics via Batched MultiCall
-            // Includes Fuel, SOC, Charging, Camera Status, etc. behavior
-            const diagnostics = await this.fetchVehicleDiagnostics(devices);
+                // Check if we have the essentials in the snapshot
+                const hasFuel = s.statusData.some(sd =>
+                    (typeof sd.diagnostic === 'string' ? sd.diagnostic : sd.diagnostic.id) === DiagnosticIds.FUEL_LEVEL
+                );
+                const hasSoc = s.statusData.some(sd =>
+                    (typeof sd.diagnostic === 'string' ? sd.diagnostic : sd.diagnostic.id) === DiagnosticIds.STATE_OF_CHARGE
+                );
 
-            const result = this.mergeData(devices, statuses, drivers, faults, diagnostics);
+                // If it's an EV, we need SOC. If ICE, we need Fuel.
+                // Simplification for mixed fleet: If we have NEITHER, consider it silent.
+                // (Or if we want to be strict: fetch if missing either)
+                if (hasFuel || hasSoc) return false; // Contains data, no need to fetch.
+
+                return true; // Missing data, need to fetch history.
+            });
+
+            // console.log(`[FleetDataService] Silent Asset Optimization: Fetching history for ${silentDevices.length} of ${devices.length} vehicles.`);
+
+            // 3. Fetch Diagnostics ONLY for Silent Assets
+            // This returns a "Patch" list of StatusData
+            const silentDiagnostics = await this.fetchVehicleDiagnostics(silentDevices);
+
+            const result = this.mergeData(devices, statuses, drivers, faults, silentDiagnostics);
             return result;
         } catch (error) {
             console.error('[FleetDataService] Critical Error:', error);
@@ -176,11 +165,13 @@ export class FleetDataService {
     }
 
     /**
-     * Fetch all critical diagnostics (Vitals + Camera Health) using optimized batches.
-     * Strategy: MultiCall with 7-day lookback (safe for dormant assets).
-     * We fetch per-device streams to guarantee data coverage without hitting global result limits.
+     * Fetch critical diagnostics (Vitals + Camera Health) for specific devices.
+     * Strategy: "Production-Hardened" MultiCall (Seq=1, Limit=1)
+     * Used mainly for "Silent" assets that are missing data in the global snapshot.
      */
     async fetchVehicleDiagnostics(devices: Device[]) {
+        if (devices.length === 0) return [];
+
         const diagIds = [
             DiagnosticIds.FUEL_LEVEL,
             DiagnosticIds.STATE_OF_CHARGE,
@@ -193,16 +184,15 @@ export class FleetDataService {
             DiagnosticIds.CAMERA_SEATBELT
         ];
 
-        // CONFIGURATION: Performance Tuned (Safe with Limit 1)
-        const CALLS_PER_BATCH = 250;     // ~27 vehicles per batch. 
-        const RESULTS_LIMIT = 1;         // KEEPS PAYLOAD LIGHT. Critical for safety.
+        // CONFIGURATION: Production Hardened
+        const CALLS_PER_BATCH = 90;      // Max 100 recommended. 90 is safe.
+        const RESULTS_LIMIT = 1;         // Latest snapshot only.
+        const CONCURRENCY = 1;           // Sequential only. Parallel risks undefined exceptions.
+        const DELAY_MS = 100;            // Polite 10 batches/sec
 
-        // Speed vs Stability Balance
-        // We can run parallel now because each return payload is tiny (250 items vs 25,000 previously)
-        const DELAY_MS = 50;
         const LOOKBACK_DAYS = 7;
-
         const fromDate = new Date(Date.now() - LOOKBACK_DAYS * 24 * 60 * 60 * 1000).toISOString();
+
         const allResults: StatusData[] = [];
 
         // Build flat call list
@@ -221,47 +211,25 @@ export class FleetDataService {
             }))
         );
 
-        // Process in PARALLEL CHUNKS (Concurrency 4)
-        // Now that payload is light, we can re-enable parallelism for speed.
-        const chunks: any[][] = [];
+        // Process SEQUENTIALLY
         for (let i = 0; i < allCalls.length; i += CALLS_PER_BATCH) {
-            chunks.push(allCalls.slice(i, i + CALLS_PER_BATCH));
-        }
-
-        const CONCURRENCY = 4;
-        for (let i = 0; i < chunks.length; i += CONCURRENCY) {
-            const parallelBatch = chunks.slice(i, i + CONCURRENCY);
-            // const batchNum = Math.floor(i / CALLS_PER_BATCH) + 1;
+            const chunk = allCalls.slice(i, i + CALLS_PER_BATCH);
 
             try {
-                // console.log(`[Fleet] Processing batch chunk ${batchNum}...`);
-                const results = await Promise.all(
-                    parallelBatch.map(chunk => this.api.multiCall<any[]>(chunk).catch(e => {
-                        console.warn(`[FleetDataService] Batch failed`, e);
-                        return [];
-                    }))
-                );
+                // Use generic 'any' to avoid TS noise
+                const batchResults = await this.api.multiCall<any[]>(chunk);
 
-                // Flatten and filter
-                results.flat().forEach(batchResults => {
-                    // batchResults is Array<Array<StatusData>> from a single multiCall
-                    if (Array.isArray(batchResults)) {
-                        const valid = batchResults.flat().filter((r: any) => r && r.device);
-                        allResults.push(...valid);
-                    }
-                });
+                const validResults = batchResults.flat().filter((r: any) => r && r.device);
+                allResults.push(...validResults);
 
-                // Minimal delay to be polite to the API
-                if (i + (CALLS_PER_BATCH * CONCURRENCY) < allCalls.length) {
+                if (i + CALLS_PER_BATCH < allCalls.length) {
                     await new Promise(r => setTimeout(r, DELAY_MS));
                 }
-
             } catch (e) {
-                console.error(`[FleetDataService] Parallel Execution Error:`, e);
+                console.error(`[FleetDataService] Batch failed`, e);
             }
         }
 
-        // console.log(`[Fleet] Fetched ${allResults.length} vitals across ${devices.length} devices`);
         return allResults;
     }
 
@@ -270,7 +238,7 @@ export class FleetDataService {
         statuses: DeviceStatusInfo[],
         drivers: User[],
         faults: FaultData[],
-        diagnosticsResults: StatusData[]
+        patchDiagnostics: StatusData[]
     ): VehicleData[] {
         const vehicleMap = new Map<string, VehicleData>();
         const cameras: Device[] = [];
@@ -290,25 +258,7 @@ export class FleetDataService {
             }
         });
 
-        // Pre-parse camera-related diagnostics
-        const diagCameraPresence = new Set<string>();
-        const cameraRelatedIds = new Set<string>([
-            DiagnosticIds.CAMERA_STATUS_ROAD,
-            DiagnosticIds.CAMERA_STATUS_DRIVER,
-            DiagnosticIds.VIDEO_DEVICE_HEALTH,
-            DiagnosticIds.CAMERA_ONLINE,
-            DiagnosticIds.CAMERA_VIBRATION,
-            DiagnosticIds.CAMERA_SEATBELT
-        ]);
-
-        diagnosticsResults.forEach(d => {
-            const id = typeof d.diagnostic === 'string' ? d.diagnostic : d.diagnostic.id;
-            if (cameraRelatedIds.has(id)) {
-                diagCameraPresence.add(d.device.id);
-            }
-        });
-
-        // Map statuses to their devices
+        // Map statuses
         const statusMap = new Map<string, DeviceStatusInfo>();
         statuses.forEach(s => statusMap.set(s.device.id, s));
 
@@ -319,41 +269,74 @@ export class FleetDataService {
             driverMap.set(d.id, name);
         });
 
-        // Build Vitals Map (Last Write Wins)
-        // Groups all diagnostics by DeviceID -> DiagnosticID -> Latest Value
-        const diagMap = new Map<string, Map<string, StatusData>>();
-
-        // 1. Sort by Date Ascending (Oldest -> Newest) so last iteration is latest
-        diagnosticsResults.sort((a, b) => new Date(a.dateTime).getTime() - new Date(b.dateTime).getTime());
-
-        diagnosticsResults.forEach(r => {
+        // Build Vitals Map from the "Patch" (Silent) results
+        const patchMap = new Map<string, Map<string, StatusData>>();
+        patchDiagnostics.sort((a, b) => new Date(a.dateTime).getTime() - new Date(b.dateTime).getTime());
+        patchDiagnostics.forEach(r => {
             const devId = r.device.id;
             const diagId = typeof r.diagnostic === 'string' ? r.diagnostic : r.diagnostic.id;
+            if (!patchMap.has(devId)) patchMap.set(devId, new Map());
+            patchMap.get(devId)!.set(diagId, r);
+        });
 
-            if (!diagMap.has(devId)) diagMap.set(devId, new Map());
-            diagMap.get(devId)!.set(diagId, r);
+        // Pre-parse camera presence (Check both Snapshot and Patch)
+        const diagCameraPresence = new Set<string>();
+        const cameraRelatedIds = new Set<string>([
+            DiagnosticIds.CAMERA_STATUS_ROAD,
+            DiagnosticIds.CAMERA_STATUS_DRIVER,
+            DiagnosticIds.VIDEO_DEVICE_HEALTH,
+            DiagnosticIds.CAMERA_ONLINE,
+            DiagnosticIds.CAMERA_VIBRATION,
+            DiagnosticIds.CAMERA_SEATBELT
+        ]);
+
+        // Helper to find data in Snapshot (DeviceStatusInfo)
+        const getFromSnapshot = (s: DeviceStatusInfo | undefined, diagId: string): any => {
+            if (!s || !s.statusData) return undefined;
+            const found = s.statusData.find((sd: any) => {
+                const id = typeof sd.diagnostic === 'string' ? sd.diagnostic : sd.diagnostic.id;
+                return id === diagId;
+            });
+            return found ? found.data : undefined;
+        };
+
+        // Helper to find data (Priority: Patch -> Snapshot)
+        const getDiagnosticValue = (deviceId: string, s: DeviceStatusInfo | undefined, diagId: string) => {
+            // 1. Try Patch (History for silent)
+            const patchVal = patchMap.get(deviceId)?.get(diagId);
+            if (patchVal) return patchVal.data;
+
+            // 2. Try Snapshot (Active)
+            return getFromSnapshot(s, diagId);
+        };
+
+        // Populate diagCameraPresence from both sources
+        patchDiagnostics.forEach(d => {
+            const id = typeof d.diagnostic === 'string' ? d.diagnostic : d.diagnostic.id;
+            if (cameraRelatedIds.has(id)) diagCameraPresence.add(d.device.id);
+        });
+        // Check snapshots for camera data
+        statuses.forEach(s => {
+            if (s.statusData) {
+                s.statusData.forEach((sd: any) => {
+                    const id = typeof sd.diagnostic === 'string' ? sd.diagnostic : sd.diagnostic.id;
+                    if (cameraRelatedIds.has(id)) diagCameraPresence.add(s.device.id);
+                });
+            }
         });
 
         // 1. Map Vehicles
         vehiclesRaw.forEach(d => {
             const s = statusMap.get(d.id);
-            const devDiags = diagMap.get(d.id); // Map<DiagID, StatusData>
 
-            // Fetch Vitals from Map
-            const fuelLevel = devDiags?.get(DiagnosticIds.FUEL_LEVEL)?.data;
-            const soc = devDiags?.get(DiagnosticIds.STATE_OF_CHARGE)?.data;
-            const chargingState = devDiags?.get(DiagnosticIds.CHARGING_STATE)?.data;
+            // Fetch Vitals (Hybrid: Patch or Snapshot)
+            const fuelLevel = getDiagnosticValue(d.id, s, DiagnosticIds.FUEL_LEVEL);
+            const soc = getDiagnosticValue(d.id, s, DiagnosticIds.STATE_OF_CHARGE);
+            const chargingState = getDiagnosticValue(d.id, s, DiagnosticIds.CHARGING_STATE);
 
             // Charging Logic
             let isCharging = false;
-            if (chargingState && chargingState > 0) isCharging = true;
-            // Fallback: check device status info
-            if (!isCharging && s && s.statusData) {
-                s.statusData.forEach(sd => {
-                    const id = typeof sd.diagnostic === 'string' ? sd.diagnostic : sd.diagnostic.id;
-                    if (id === DiagnosticIds.CHARGING_STATE && sd.data > 0) isCharging = true;
-                });
-            }
+            if (chargingState && chargingState > 0) isCharging = true; // Works for boolean 1/0 or number
 
             // Find linked camera
             const camera = cameras.find(c => {
@@ -370,24 +353,27 @@ export class FleetDataService {
             if (camera || hasCameraViaDiag) {
                 camHealth = 'good'; // Default if present
 
-                // Get diagnostics for this specific device
-                const latestHealth = devDiags?.get(DiagnosticIds.VIDEO_DEVICE_HEALTH);
-                const latestRoad = devDiags?.get(DiagnosticIds.CAMERA_STATUS_ROAD);
-                const latestOnline = devDiags?.get(DiagnosticIds.CAMERA_ONLINE);
+                // We need to check both Patch and Snapshot for these specifics
+                // But simplified: we just check existence of "Offline" signals or "Critical" signals
+
+                const getDiag = (id: string) => getDiagnosticValue(d.id, s, id);
+
+                const healthVal = getDiag(DiagnosticIds.VIDEO_DEVICE_HEALTH);
+                const roadVal = getDiag(DiagnosticIds.CAMERA_STATUS_ROAD);
+                const onlineVal = getDiag(DiagnosticIds.CAMERA_ONLINE);
 
                 // Online/Offline check first
-                if (latestOnline && latestOnline.data === 0) {
+                if (onlineVal !== undefined && onlineVal === 0) {
                     camHealth = 'offline';
                 } else if (camStatus && !camStatus.isDeviceCommunicating) {
-                    // Only mark offline based on camera device status if we have a physical camera pairing
                     if (camera) camHealth = 'offline';
                 } else {
                     // Critical health states
-                    if (latestHealth && (latestHealth.data === 2 || latestHealth.data === 3)) camHealth = 'critical';
-                    else if (latestRoad && (latestRoad.data === 0 || latestRoad.data === 4)) camHealth = 'critical';
+                    if (healthVal === 2 || healthVal === 3) camHealth = 'critical';
+                    else if (roadVal === 0 || roadVal === 4) camHealth = 'critical';
                     // Warning health states
-                    else if (latestHealth && latestHealth.data === 1) camHealth = 'warning';
-                    else if (latestRoad && (latestRoad.data === 1 || latestRoad.data === 3)) camHealth = 'warning';
+                    else if (healthVal === 1) camHealth = 'warning';
+                    else if (roadVal === 1 || roadVal === 3) camHealth = 'warning';
                 }
             }
 
