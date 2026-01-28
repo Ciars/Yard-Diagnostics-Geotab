@@ -121,7 +121,49 @@ export class FleetDataService {
                 faultCall
             ]);
 
-            // 2. Fetch ALL Diagnostics via Batched MultiCall (7-day window for safety)
+            // [DEBUG-PROBE] Run probes for Q2 and Q3
+            if (devices.length > 0) {
+                const probeId = devices[0].id; // Use first available device
+                console.log(`[PROBE] Starting Diagnostic Probe for Device: ${probeId}`);
+
+                // Question 2: Verify Camera Data Exists (DiagnosticCameraStatusRoadId)
+                // If this fails, the ID invalidates the whole batch.
+                this.api.call('Get', {
+                    typeName: 'StatusData',
+                    search: {
+                        deviceSearch: { id: probeId },
+                        diagnosticSearch: { id: DiagnosticIds.CAMERA_STATUS_ROAD },
+                        fromDate: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
+                    },
+                    resultsLimit: 1
+                }).then(res => {
+                    console.log('--- QUESTION 2 RESULT (Validity Check) ---');
+                    console.log('Returned:', JSON.stringify(res, null, 2));
+                }).catch(err => {
+                    console.error('--- QUESTION 2 FAILED (Invalid ID?) ---', err);
+                });
+
+                // Question 3: DeviceStatusInfo Reality Check
+                // Does it contain Fuel/SOC for active vehicles?
+                this.api.call('Get', {
+                    typeName: 'DeviceStatusInfo',
+                    search: { deviceSearch: { id: probeId } }
+                }).then(res => {
+                    console.log('--- QUESTION 3 RESULT (DeviceStatusInfo) ---');
+                    if (Array.isArray(res) && res.length > 0 && res[0].statusData) {
+                        const ids = res[0].statusData.map((d: any) => typeof d.diagnostic === 'object' ? d.diagnostic.id : d.diagnostic);
+                        console.log('DeviceStatusInfo contains diagnostics:', ids);
+                        console.log('Has Fuel?', ids.includes(DiagnosticIds.FUEL_LEVEL));
+                        console.log('Has SOC?', ids.includes(DiagnosticIds.STATE_OF_CHARGE));
+                    } else {
+                        console.log('DeviceStatusInfo has NO statusData.');
+                    }
+                }).catch(err => {
+                    console.error('--- QUESTION 3 FAILED ---', err);
+                });
+            }
+
+            // 2. Fetch ALL Diagnostics via Batched MultiCall
             // Includes Fuel, SOC, Charging, Camera Status, etc. behavior
             const diagnostics = await this.fetchVehicleDiagnostics(devices);
 
