@@ -1,7 +1,7 @@
 import { useState, useMemo } from 'react';
 import type { VehicleData } from '@/types/geotab';
 
-export type SortField = 'asset' | 'model' | 'driver' | 'fuel' | 'soc' | 'service' | 'duration';
+export type SortField = 'asset' | 'model' | 'driver' | 'fuel' | 'soc' | 'duration';
 export type SortDirection = 'asc' | 'desc';
 
 export function useVehicleSort(vehicles: VehicleData[]) {
@@ -43,9 +43,7 @@ export function useVehicleSort(vehicles: VehicleData[]) {
                     if (b.stateOfCharge === undefined) return -1;
                     comparison = a.stateOfCharge - b.stateOfCharge;
                     break;
-                case 'service':
-                    comparison = (a.serviceDueDays ?? 999) - (b.serviceDueDays ?? 999);
-                    break;
+
                 case 'duration':
                     // Use robust service-calculated duration
                     const durA = a.zoneDurationMs ?? 0;

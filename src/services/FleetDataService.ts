@@ -587,9 +587,6 @@ export class FleetDataService {
                 (v) => (v.dormancyDays ?? 0) >= DORMANCY_THRESHOLD_DAYS
             ).length,
             charging: vehicles.filter((v) => v.isCharging).length,
-            serviceDue: vehicles.filter(
-                (v) => v.serviceDueDays !== undefined && v.serviceDueDays <= 14
-            ).length,
         };
     }
 

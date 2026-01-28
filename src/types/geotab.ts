@@ -190,14 +190,7 @@ export interface DVIRDefect {
     certifiedBy?: EntityReference;
 }
 
-export interface MaintenanceReminder {
-    id: string;
-    device: EntityReference;
-    rule: EntityReference;
-    dueDate?: string;
-    dueMileage?: number;
-    lastServiceDate?: string;
-}
+
 
 // =============================================================================
 // User & Driver
@@ -494,7 +487,6 @@ export interface VehicleData {
     };
     activeFaults: FaultData[]; // Keep for backward compat or raw view
     lastTrip?: Trip;
-    serviceDueDays?: number;
     cameraStatus?: {
         isOnline: boolean;
         health?: 'good' | 'warning' | 'critical' | 'offline';
@@ -508,13 +500,11 @@ export type KpiFilterType =
     | 'critical'
     | 'silent'
     | 'dormant'
-    | 'charging'
-    | 'serviceDue';
+    | 'charging';
 
 export interface KpiCounts {
     critical: number;
     silent: number;
     dormant: number;
     charging: number;
-    serviceDue: number;
 }

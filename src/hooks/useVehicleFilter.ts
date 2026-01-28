@@ -18,8 +18,7 @@ export function useVehicleFilter(vehicles: VehicleData[]) {
                     return (v.dormancyDays ?? 0) >= 14;
                 case 'charging':
                     return v.isCharging;
-                case 'serviceDue':
-                    return (v.serviceDueDays ?? 999) <= 7;
+
                 default:
                     return true;
             }

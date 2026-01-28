@@ -37,14 +37,14 @@ export function Dashboard() {
     const handleExport = () => {
         if (vehicles.length === 0) return;
 
-        const headers = ['Asset', 'Make/Model', 'Driver', 'Fuel', 'SOC', 'Service', 'Zone Duration'];
+        const headers = ['Asset', 'Make/Model', 'Driver', 'Fuel', 'SOC', 'Zone Duration'];
         const rows = vehicles.map(v => [
             v.device.name,
             v.makeModel || '--',
             v.driverName || 'No Driver',
             v.fuelLevel !== undefined ? `${Math.round(v.fuelLevel)}%` : '--',
             v.stateOfCharge !== undefined ? `${Math.round(v.stateOfCharge)}%` : '--',
-            v.serviceDueDays !== undefined ? `Due in ${v.serviceDueDays}d` : '--',
+
             v.zoneEntryTime ? `${Math.round((v.zoneDurationMs ?? 0) / (1000 * 60 * 60))}h` : '--'
         ]);
 

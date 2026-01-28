@@ -128,26 +128,7 @@ export const AssetHealthDashboard: React.FC<AssetHealthDashboardProps> = ({ vehi
                     <hr className="ah-divider" />
 
                     <div className="ah-cards-row">
-                        {/* Maintenance Card */}
-                        <div className="ah-card">
-                            <div className="ah-card-header">
-                                <span>🛠️ Maintenance Overview</span>
-                            </div>
-                            <div className="ah-card-body">
-                                <div className="ah-stat-row">
-                                    <span className="label">Open work requests</span>
-                                    <span className="value">0</span>
-                                </div>
-                                <div className="ah-stat-row">
-                                    <span className="label">Severe work requests</span>
-                                    <span className="value">0</span>
-                                </div>
-                                <div className="ah-stat-row">
-                                    <span className="label">Service Due</span>
-                                    <span className="value">{vehicle.serviceDueDays != null ? `${vehicle.serviceDueDays} days` : '-'}</span>
-                                </div>
-                            </div>
-                        </div>
+
 
                         {/* Fault Summary Card */}
                         <div className="ah-card">

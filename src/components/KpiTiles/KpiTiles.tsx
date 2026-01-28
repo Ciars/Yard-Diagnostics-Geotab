@@ -7,7 +7,7 @@
 
 import { useFleetStore, selectActiveKpiFilter } from '@/store/useFleetStore';
 import type { KpiCounts, KpiFilterType } from '@/types/geotab';
-import { AlertTriangle, WifiOff, PauseCircle, Zap, Wrench } from 'lucide-react';
+import { AlertTriangle, WifiOff, PauseCircle, Zap } from 'lucide-react';
 import './KpiTiles.css';
 
 interface KpiTilesProps {
@@ -52,13 +52,7 @@ const TILE_CONFIG: TileConfig[] = [
         colorClass: 'kpi-tile--charging',
         icon: Zap,
     },
-    {
-        key: 'serviceDue',
-        label: 'SERVICE DUE',
-        description: 'Within 7 days',
-        colorClass: 'kpi-tile--service',
-        icon: Wrench,
-    },
+
 ];
 
 export function KpiTiles({ kpis, isLoading }: KpiTilesProps) {

@@ -264,8 +264,7 @@ export const selectFilteredVehicles = (state: FleetStore) => {
             return vehicles.filter((v) => (v.dormancyDays ?? 0) >= 14);
         case 'charging':
             return vehicles.filter((v) => v.isCharging);
-        case 'serviceDue':
-            return vehicles.filter((_v) => false); // TODO: implement service due logic
+
         default:
             return vehicles;
     }
