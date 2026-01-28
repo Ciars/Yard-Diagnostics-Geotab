@@ -177,13 +177,14 @@ export class FleetDataService {
             });
         });
 
-        // 2. Execute in Parallel Chunks (Concurrency Limit: 5)
+        // 2. Execute in Parallel Chunks (Concurrency Limit: 2)
         const chunks: any[][] = [];
-        for (let i = 0; i < allCalls.length; i += 200) { // Chunk by API call count, not strictly "devices", but roughly 200 calls is safe for MultiCall
-            chunks.push(allCalls.slice(i, i + 200));
+        const BATCH_SIZE = 50; // Reduced from 200 to prevent 'undefined exception' errors on large payloads
+        for (let i = 0; i < allCalls.length; i += BATCH_SIZE) {
+            chunks.push(allCalls.slice(i, i + BATCH_SIZE));
         }
 
-        const CONCURRENCY = 5;
+        const CONCURRENCY = 2; // Reduced from 5 to prevent rate limiting
         for (let i = 0; i < chunks.length; i += CONCURRENCY) {
             const parallelBatch = chunks.slice(i, i + CONCURRENCY);
             try {
