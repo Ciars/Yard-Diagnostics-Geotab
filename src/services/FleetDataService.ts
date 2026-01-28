@@ -151,12 +151,13 @@ export class FleetDataService {
             DiagnosticIds.CAMERA_SEATBELT
         ];
 
-        // CONFIGURATION: Stable for 500+ vehicle fleets
-        const CALLS_PER_BATCH = 50;      // ~6 vehicles (50/9 diags) per batch
-        const RESULTS_LIMIT = 1;         // CRITICAL: Fetch ONLY latest value, not history
+        // CONFIGURATION: Performance Tuned (Safe with Limit 1)
+        const CALLS_PER_BATCH = 250;     // ~27 vehicles per batch. 
+        const RESULTS_LIMIT = 1;         // KEEPS PAYLOAD LIGHT. Critical for safety.
 
-        // Safety delays to prevent "undefined exception" from worker overload
-        const DELAY_MS = 150;
+        // Speed vs Stability Balance
+        // We can run parallel now because each return payload is tiny (250 items vs 25,000 previously)
+        const DELAY_MS = 50;
         const LOOKBACK_DAYS = 7;
 
         const fromDate = new Date(Date.now() - LOOKBACK_DAYS * 24 * 60 * 60 * 1000).toISOString();
@@ -173,36 +174,48 @@ export class FleetDataService {
                         diagnosticSearch: { id },
                         fromDate
                     },
-                    resultsLimit: RESULTS_LIMIT // This reduces server load by 99%
+                    resultsLimit: RESULTS_LIMIT
                 }
             }))
         );
 
-        // Process SEQUENTIALLY (concurrency 1)
-        // Parallel multiCalls trigger the JSON-RPC "undefined exception" crash on large fleets.
-        const totalBatches = Math.ceil(allCalls.length / CALLS_PER_BATCH);
-
+        // Process in PARALLEL CHUNKS (Concurrency 4)
+        // Now that payload is light, we can re-enable parallelism for speed.
+        const chunks: any[][] = [];
         for (let i = 0; i < allCalls.length; i += CALLS_PER_BATCH) {
-            const chunk = allCalls.slice(i, i + CALLS_PER_BATCH);
+            chunks.push(allCalls.slice(i, i + CALLS_PER_BATCH));
+        }
+
+        const CONCURRENCY = 4;
+        for (let i = 0; i < chunks.length; i += CONCURRENCY) {
+            const parallelBatch = chunks.slice(i, i + CONCURRENCY);
             // const batchNum = Math.floor(i / CALLS_PER_BATCH) + 1;
 
             try {
-                // console.log(`[Fleet] Processing batch ${batchNum}/${totalBatches}`);
-                // Use generic 'any' for multiCall result to avoid complex TS mapping issues with arrays
-                const batchResults = await this.api.multiCall<any[]>(chunk);
+                // console.log(`[Fleet] Processing batch chunk ${batchNum}...`);
+                const results = await Promise.all(
+                    parallelBatch.map(chunk => this.api.multiCall<any[]>(chunk).catch(e => {
+                        console.warn(`[FleetDataService] Batch failed`, e);
+                        return [];
+                    }))
+                );
 
-                // Flatten and filter nulls/errors
-                const validResults = batchResults.flat().filter((r: any) => r && r.device);
-                allResults.push(...validResults);
+                // Flatten and filter
+                results.flat().forEach(batchResults => {
+                    // batchResults is Array<Array<StatusData>> from a single multiCall
+                    if (Array.isArray(batchResults)) {
+                        const valid = batchResults.flat().filter((r: any) => r && r.device);
+                        allResults.push(...valid);
+                    }
+                });
 
-                // Progress delay (prevents rate limiting / thermal throttling)
-                if (i + CALLS_PER_BATCH < allCalls.length) {
+                // Minimal delay to be polite to the API
+                if (i + (CALLS_PER_BATCH * CONCURRENCY) < allCalls.length) {
                     await new Promise(r => setTimeout(r, DELAY_MS));
                 }
 
             } catch (e) {
-                console.error(`[FleetDataService] Batch failed:`, e);
-                // Continue to next batch - do not fail entire fetch
+                console.error(`[FleetDataService] Parallel Execution Error:`, e);
             }
         }
 
