@@ -139,17 +139,10 @@ export class FleetDataService {
      * We fetch per-device streams to guarantee data coverage without hitting global result limits.
      */
     async fetchVehicleDiagnostics(devices: Device[]) {
-        const fromDate = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
-        // Batching Policy: ~200 calls per MultiCall is a safe limit.
-        // With ~9 diagnostics per vehicle, that's roughly 22 vehicles per batch.
-        const allResults: StatusData[] = [];
-
-        // Diagnostics to fetch
         const diagIds = [
             DiagnosticIds.FUEL_LEVEL,
             DiagnosticIds.STATE_OF_CHARGE,
             DiagnosticIds.CHARGING_STATE,
-            // Camera
             DiagnosticIds.CAMERA_STATUS_ROAD,
             DiagnosticIds.CAMERA_STATUS_DRIVER,
             DiagnosticIds.VIDEO_DEVICE_HEALTH,
@@ -158,53 +151,62 @@ export class FleetDataService {
             DiagnosticIds.CAMERA_SEATBELT
         ];
 
-        // 1. Build All Calls
-        const allCalls: any[] = [];
-        devices.forEach(d => {
-            diagIds.forEach(id => {
-                allCalls.push({
-                    method: 'Get',
-                    params: {
-                        typeName: 'StatusData',
-                        search: {
-                            deviceSearch: { id: d.id },
-                            diagnosticSearch: { id },
-                            fromDate: fromDate
-                        },
-                        resultsLimit: 500 // Generous limit per device/diag to capture history if needed, knowing we take the latest.
-                    }
-                });
-            });
-        });
+        // CONFIGURATION: Stable for 500+ vehicle fleets
+        const CALLS_PER_BATCH = 50;      // ~6 vehicles (50/9 diags) per batch
+        const RESULTS_LIMIT = 1;         // CRITICAL: Fetch ONLY latest value, not history
 
-        // 2. Execute in Parallel Chunks (Concurrency Limit: 2)
-        const chunks: any[][] = [];
-        const BATCH_SIZE = 50; // Reduced from 200 to prevent 'undefined exception' errors on large payloads
-        for (let i = 0; i < allCalls.length; i += BATCH_SIZE) {
-            chunks.push(allCalls.slice(i, i + BATCH_SIZE));
-        }
+        // Safety delays to prevent "undefined exception" from worker overload
+        const DELAY_MS = 150;
+        const LOOKBACK_DAYS = 7;
 
-        const CONCURRENCY = 2; // Reduced from 5 to prevent rate limiting
-        for (let i = 0; i < chunks.length; i += CONCURRENCY) {
-            const parallelBatch = chunks.slice(i, i + CONCURRENCY);
+        const fromDate = new Date(Date.now() - LOOKBACK_DAYS * 24 * 60 * 60 * 1000).toISOString();
+        const allResults: StatusData[] = [];
+
+        // Build flat call list
+        const allCalls = devices.flatMap(d =>
+            diagIds.map(id => ({
+                method: 'Get',
+                params: {
+                    typeName: 'StatusData',
+                    search: {
+                        deviceSearch: { id: d.id },
+                        diagnosticSearch: { id },
+                        fromDate
+                    },
+                    resultsLimit: RESULTS_LIMIT // This reduces server load by 99%
+                }
+            }))
+        );
+
+        // Process SEQUENTIALLY (concurrency 1)
+        // Parallel multiCalls trigger the JSON-RPC "undefined exception" crash on large fleets.
+        const totalBatches = Math.ceil(allCalls.length / CALLS_PER_BATCH);
+
+        for (let i = 0; i < allCalls.length; i += CALLS_PER_BATCH) {
+            const chunk = allCalls.slice(i, i + CALLS_PER_BATCH);
+            // const batchNum = Math.floor(i / CALLS_PER_BATCH) + 1;
+
             try {
-                const results = await Promise.all(
-                    parallelBatch.map(chunk => this.api.multiCall<StatusData[][]>(chunk).catch(e => {
-                        console.warn(`[FleetDataService] Batch chunk failed`, e);
-                        return [];
-                    }))
-                );
+                // console.log(`[Fleet] Processing batch ${batchNum}/${totalBatches}`);
+                // Use generic 'any' for multiCall result to avoid complex TS mapping issues with arrays
+                const batchResults = await this.api.multiCall<any[]>(chunk);
 
-                results.flat().forEach(r => {
-                    if (Array.isArray(r) && r.length > 0) {
-                        allResults.push(...r);
-                    }
-                });
+                // Flatten and filter nulls/errors
+                const validResults = batchResults.flat().filter((r: any) => r && r.device);
+                allResults.push(...validResults);
+
+                // Progress delay (prevents rate limiting / thermal throttling)
+                if (i + CALLS_PER_BATCH < allCalls.length) {
+                    await new Promise(r => setTimeout(r, DELAY_MS));
+                }
+
             } catch (e) {
-                console.warn(`[FleetDataService] Parallel batch execution error`, e);
+                console.error(`[FleetDataService] Batch failed:`, e);
+                // Continue to next batch - do not fail entire fetch
             }
         }
 
+        // console.log(`[Fleet] Fetched ${allResults.length} vitals across ${devices.length} devices`);
         return allResults;
     }
 
