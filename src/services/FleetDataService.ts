@@ -121,16 +121,11 @@ export class FleetDataService {
                 faultCall
             ]);
 
-            // console.log(`[FleetDataService] Core Loaded: ${devices.length} Devices`);
+            // 2. Fetch ALL Diagnostics via Batched MultiCall (7-day window for safety)
+            // Includes Fuel, SOC, Charging, Camera Status, etc. behavior
+            const diagnostics = await this.fetchVehicleDiagnostics(devices);
 
-            // 2. Fetch Camera Status (Requires specific lookback)
-            const cameraResults = await this.fetchCameraStatus();
-
-            // 3. Fetch Vitals via Batched MultiCall (24h window)
-            const batchedVitals = await this.fetchBatchedVitals(devices);
-
-            const result = this.mergeData(devices, statuses, drivers, faults, cameraResults, batchedVitals);
-            // console.log(`[FleetDataService] Merged Data: ${result.length} Vehicles`);
+            const result = this.mergeData(devices, statuses, drivers, faults, diagnostics);
             return result;
         } catch (error) {
             console.error('[FleetDataService] Critical Error:', error);
@@ -139,72 +134,28 @@ export class FleetDataService {
     }
 
     /**
-     * Fetch latest diagnostic values globally across the fleet using MultiCall.
-     * Use 7-day lookback for cameras to catch infrequent reports.
-     * Use 24-hour lookback for vitals (Fuel/SOC).
+     * Fetch all critical diagnostics (Vitals + Camera Health) using optimized batches.
+     * Strategy: MultiCall with 7-day lookback (safe for dormant assets).
+     * We fetch per-device streams to guarantee data coverage without hitting global result limits.
      */
-    /**
-     * Fetch Camera Status separately (requires 7-day lookback for dormant cameras).
-     * Fuel and SOC are now derived directly from DeviceStatusInfo (Snapshot).
-     */
-    public async fetchCameraStatus() {
-        const now = Date.now();
-        const fromDateCameras = new Date(now - 7 * 24 * 60 * 60 * 1000).toISOString();
-
-        // Helper: Global Safe Fetch
-        const fetchGlobalSafe = async (id: string, fromDate: string, limit: number, label: string) => {
-            try {
-                return await this.api.call<StatusData[]>('Get', {
-                    typeName: 'StatusData',
-                    search: { diagnosticSearch: { id }, fromDate },
-                    resultsLimit: limit
-                });
-            } catch (e) {
-                console.warn(`[FleetDataService] Failed global fetch for ${label} (${id})`);
-                return [] as StatusData[];
-            }
-        };
-
-        try {
-            const [
-                cameraRoad,
-                cameraDriver,
-                cameraHealth,
-                cameraOnline,
-                cameraVib,
-                cameraSeat,
-            ] = await Promise.all([
-                fetchGlobalSafe(DiagnosticIds.CAMERA_STATUS_ROAD, fromDateCameras, 5000, 'CamRoad'),
-                fetchGlobalSafe(DiagnosticIds.CAMERA_STATUS_DRIVER, fromDateCameras, 5000, 'CamDriver'),
-                fetchGlobalSafe(DiagnosticIds.VIDEO_DEVICE_HEALTH, fromDateCameras, 5000, 'CamHealth'),
-                fetchGlobalSafe(DiagnosticIds.CAMERA_ONLINE, fromDateCameras, 5000, 'CamOnline'),
-                fetchGlobalSafe(DiagnosticIds.CAMERA_VIBRATION, fromDateCameras, 5000, 'CamVib'),
-                fetchGlobalSafe(DiagnosticIds.CAMERA_SEATBELT, fromDateCameras, 5000, 'CamSeat'),
-            ]);
-
-            return [
-                ...cameraRoad, ...cameraDriver, ...cameraHealth,
-                ...cameraOnline, ...cameraVib, ...cameraSeat
-            ];
-        } catch (e) {
-            console.error('[FleetDataService] Camera Fetch Failure', e);
-            return [] as StatusData[];
-        }
-    }
-
-    /**
-     * Fetch latest Fuel & SOC for all devices using optimized batches.
-     * Strategy: MultiCall with 24-hour lookback.
-     * We fetch "Last 24 hours" of data and take the last record (latest).
-     * If 24h is empty, we accept it as "No Data" to avoid expensive deep lookups on every load.
-     */
-    async fetchBatchedVitals(devices: Device[]) {
-        const fromDate = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-        const BATCH_SIZE = 50; // 25 Vehicles x 2 Diagnostics = 50 calls
+    async fetchVehicleDiagnostics(devices: Device[]) {
+        const fromDate = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+        const BATCH_SIZE = 25; // 25 Vehicles x ~8 Diagnostics = 200 calls per batch
         const allResults: StatusData[] = [];
 
         // Diagnostics to fetch
-        const diagIds = [DiagnosticIds.FUEL_LEVEL, DiagnosticIds.STATE_OF_CHARGE];
+        const diagIds = [
+            DiagnosticIds.FUEL_LEVEL,
+            DiagnosticIds.STATE_OF_CHARGE,
+            DiagnosticIds.CHARGING_STATE,
+            // Camera
+            DiagnosticIds.CAMERA_STATUS_ROAD,
+            DiagnosticIds.CAMERA_STATUS_DRIVER,
+            DiagnosticIds.VIDEO_DEVICE_HEALTH,
+            DiagnosticIds.CAMERA_ONLINE,
+            DiagnosticIds.CAMERA_VIBRATION,
+            DiagnosticIds.CAMERA_SEATBELT
+        ];
 
         // 1. Build All Calls
         const allCalls: any[] = [];
@@ -219,17 +170,16 @@ export class FleetDataService {
                             diagnosticSearch: { id },
                             fromDate: fromDate
                         },
-                        resultsLimit: 50 // Fetch recent history to ensure we get the absolute latest point in the window
+                        resultsLimit: 500 // Generous limit per device/diag to capture history if needed, knowing we take the latest.
                     }
                 });
             });
         });
 
         // 2. Execute in Parallel Chunks (Concurrency Limit: 5)
-        // Helps avoid slow sequential waterfalls while respecting browser connection limits.
         const chunks: any[][] = [];
-        for (let i = 0; i < allCalls.length; i += BATCH_SIZE) {
-            chunks.push(allCalls.slice(i, i + BATCH_SIZE));
+        for (let i = 0; i < allCalls.length; i += 200) { // Chunk by API call count, not strictly "devices", but roughly 200 calls is safe for MultiCall
+            chunks.push(allCalls.slice(i, i + 200));
         }
 
         const CONCURRENCY = 5;
@@ -261,8 +211,7 @@ export class FleetDataService {
         statuses: DeviceStatusInfo[],
         drivers: User[],
         faults: FaultData[],
-        cameraResults: StatusData[],
-        vitalsResults: StatusData[]
+        diagnosticsResults: StatusData[]
     ): VehicleData[] {
         const vehicleMap = new Map<string, VehicleData>();
         const cameras: Device[] = [];
@@ -282,10 +231,22 @@ export class FleetDataService {
             }
         });
 
-        // Pre-parse camera-related diagnostics from vitals (Global Scan)
+        // Pre-parse camera-related diagnostics
         const diagCameraPresence = new Set<string>();
-        cameraResults.forEach(d => {
-            diagCameraPresence.add(d.device.id);
+        const cameraRelatedIds = new Set([
+            DiagnosticIds.CAMERA_STATUS_ROAD,
+            DiagnosticIds.CAMERA_STATUS_DRIVER,
+            DiagnosticIds.VIDEO_DEVICE_HEALTH,
+            DiagnosticIds.CAMERA_ONLINE,
+            DiagnosticIds.CAMERA_VIBRATION,
+            DiagnosticIds.CAMERA_SEATBELT
+        ]);
+
+        diagnosticsResults.forEach(d => {
+            const id = typeof d.diagnostic === 'string' ? d.diagnostic : d.diagnostic.id;
+            if (cameraRelatedIds.has(id)) {
+                diagCameraPresence.add(d.device.id);
+            }
         });
 
         // Map statuses to their devices
@@ -300,33 +261,35 @@ export class FleetDataService {
         });
 
         // Build Vitals Map (Last Write Wins)
-        const vitalsMap = new Map<string, Map<string, number>>();
-        // 1. Sort by Date Ascending (Oldest -> Newest) so last iteration is latest
-        vitalsResults.sort((a, b) => new Date(a.dateTime).getTime() - new Date(b.dateTime).getTime());
+        // Groups all diagnostics by DeviceID -> DiagnosticID -> Latest Value
+        const diagMap = new Map<string, Map<string, StatusData>>();
 
-        vitalsResults.forEach(r => {
+        // 1. Sort by Date Ascending (Oldest -> Newest) so last iteration is latest
+        diagnosticsResults.sort((a, b) => new Date(a.dateTime).getTime() - new Date(b.dateTime).getTime());
+
+        diagnosticsResults.forEach(r => {
             const devId = r.device.id;
             const diagId = typeof r.diagnostic === 'string' ? r.diagnostic : r.diagnostic.id;
 
-            if (!vitalsMap.has(devId)) vitalsMap.set(devId, new Map());
-            vitalsMap.get(devId)!.set(diagId, r.data);
+            if (!diagMap.has(devId)) diagMap.set(devId, new Map());
+            diagMap.get(devId)!.set(diagId, r);
         });
 
         // 1. Map Vehicles
         vehiclesRaw.forEach(d => {
             const s = statusMap.get(d.id);
-            const devVitals = vitalsMap.get(d.id);
+            const devDiags = diagMap.get(d.id); // Map<DiagID, StatusData>
 
             // Fetch Vitals from Map
-            const fuelLevel = devVitals?.get(DiagnosticIds.FUEL_LEVEL);
-            const soc = devVitals?.get(DiagnosticIds.STATE_OF_CHARGE);
+            const fuelLevel = devDiags?.get(DiagnosticIds.FUEL_LEVEL)?.data;
+            const soc = devDiags?.get(DiagnosticIds.STATE_OF_CHARGE)?.data;
+            const chargingState = devDiags?.get(DiagnosticIds.CHARGING_STATE)?.data;
 
-            // Charging Logic (Fallback to simple status checks if needed)
-            // Note: We aren't fetching specialized EV charging diagnostics in this fallback batch to save calls.
-            // If strictly needed, we can add DiagnosticIds.CHARGING_STATE to fetchBatchedVitals.
+            // Charging Logic
             let isCharging = false;
-            if (s && s.statusData) {
-                // Check DeviceStatusInfo snapshot just in case it has charging flags (unlikely if empty)
+            if (chargingState && chargingState > 0) isCharging = true;
+            // Fallback: check device status info
+            if (!isCharging && s && s.statusData) {
                 s.statusData.forEach(sd => {
                     const id = typeof sd.diagnostic === 'string' ? sd.diagnostic : sd.diagnostic.id;
                     if (id === DiagnosticIds.CHARGING_STATE && sd.data > 0) isCharging = true;
@@ -348,31 +311,17 @@ export class FleetDataService {
             if (camera || hasCameraViaDiag) {
                 camHealth = 'good'; // Default if present
 
-                // Check for health diagnostics
-                const healthLogs = cameraResults
-                    .filter(log => log.device.id === d.id)
-                    .sort((a, b) => new Date(b.dateTime).getTime() - new Date(a.dateTime).getTime());
-
-                const latestHealth = healthLogs.find(l => {
-                    const id = typeof l.diagnostic === 'string' ? l.diagnostic : l.diagnostic?.id;
-                    return id === DiagnosticIds.VIDEO_DEVICE_HEALTH;
-                });
-
-                const latestRoad = healthLogs.find(l => {
-                    const id = typeof l.diagnostic === 'string' ? l.diagnostic : l.diagnostic?.id;
-                    return id === DiagnosticIds.CAMERA_STATUS_ROAD;
-                });
-
-                const latestOnline = healthLogs.find(l => {
-                    const id = typeof l.diagnostic === 'string' ? l.diagnostic : l.diagnostic?.id;
-                    return id === DiagnosticIds.CAMERA_ONLINE;
-                });
+                // Get diagnostics for this specific device
+                const latestHealth = devDiags?.get(DiagnosticIds.VIDEO_DEVICE_HEALTH);
+                const latestRoad = devDiags?.get(DiagnosticIds.CAMERA_STATUS_ROAD);
+                const latestOnline = devDiags?.get(DiagnosticIds.CAMERA_ONLINE);
 
                 // Online/Offline check first
                 if (latestOnline && latestOnline.data === 0) {
                     camHealth = 'offline';
                 } else if (camStatus && !camStatus.isDeviceCommunicating) {
-                    camHealth = 'offline';
+                    // Only mark offline based on camera device status if we have a physical camera pairing
+                    if (camera) camHealth = 'offline';
                 } else {
                     // Critical health states
                     if (latestHealth && (latestHealth.data === 2 || latestHealth.data === 3)) camHealth = 'critical';
