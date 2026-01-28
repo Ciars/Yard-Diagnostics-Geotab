@@ -150,7 +150,10 @@ export class FleetDataService {
                 return true; // Missing data, need to fetch history.
             });
 
-            // console.log(`[FleetDataService] Silent Asset Optimization: Fetching history for ${silentDevices.length} of ${devices.length} vehicles.`);
+            console.log(`[FleetDataService] Optimization Analysis:
+            - Total Fleet: ${devices.length}
+            - Active (Snapshot Data): ${devices.length - silentDevices.length}
+            - Silent (Fetching History): ${silentDevices.length}`);
 
             // 3. Fetch Diagnostics ONLY for Silent Assets
             // This returns a "Patch" list of StatusData
@@ -217,6 +220,7 @@ export class FleetDataService {
 
             try {
                 // Use generic 'any' to avoid TS noise
+                console.log(`[FleetDataService] Processing Batch ${Math.floor(i / CALLS_PER_BATCH) + 1}/${Math.floor(allCalls.length / CALLS_PER_BATCH) + 1}`);
                 const batchResults = await this.api.multiCall<any[]>(chunk);
 
                 const validResults = batchResults.flat().filter((r: any) => r && r.device);
