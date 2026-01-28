@@ -140,7 +140,8 @@ export class FleetDataService {
      */
     async fetchVehicleDiagnostics(devices: Device[]) {
         const fromDate = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
-        const BATCH_SIZE = 25; // 25 Vehicles x ~8 Diagnostics = 200 calls per batch
+        // Batching Policy: ~200 calls per MultiCall is a safe limit.
+        // With ~9 diagnostics per vehicle, that's roughly 22 vehicles per batch.
         const allResults: StatusData[] = [];
 
         // Diagnostics to fetch
@@ -233,7 +234,7 @@ export class FleetDataService {
 
         // Pre-parse camera-related diagnostics
         const diagCameraPresence = new Set<string>();
-        const cameraRelatedIds = new Set([
+        const cameraRelatedIds = new Set<string>([
             DiagnosticIds.CAMERA_STATUS_ROAD,
             DiagnosticIds.CAMERA_STATUS_DRIVER,
             DiagnosticIds.VIDEO_DEVICE_HEALTH,
