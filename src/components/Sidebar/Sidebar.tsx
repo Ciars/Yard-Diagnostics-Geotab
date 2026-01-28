@@ -61,6 +61,9 @@ export function Sidebar() {
                 <div className="sidebar__logo">
                     <h1>GeoYard</h1>
                     <span className="subtitle">Yard Vision</span>
+                    <span style={{ fontSize: '0.6rem', color: '#666', display: 'block', marginTop: '2px' }}>
+                        v{__APP_VERSION__} ({new Date(__BUILD_TIMESTAMP__).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })})
+                    </span>
                 </div>
                 <button className="sidebar__logout" aria-label="Logout">
                     <LogOut size={18} />

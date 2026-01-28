@@ -123,10 +123,13 @@ export class FleetDataService {
 
             // console.log(`[FleetDataService] Core Loaded: ${devices.length} Devices`);
 
-            // 2. Fetch Global Vitals & Camera Discovery (Bulk Scan)
-            const vitals = await this.fetchGlobalVitals(devices);
+            // 2. Fetch Camera Status (Requires specific lookback)
+            const cameraResults = await this.fetchCameraStatus();
 
-            const result = this.mergeData(devices, statuses, drivers, faults, vitals);
+            // 3. Fetch Vitals via Batched MultiCall (24h window)
+            const batchedVitals = await this.fetchBatchedVitals(devices);
+
+            const result = this.mergeData(devices, statuses, drivers, faults, cameraResults, batchedVitals);
             // console.log(`[FleetDataService] Merged Data: ${result.length} Vehicles`);
             return result;
         } catch (error) {
@@ -141,23 +144,14 @@ export class FleetDataService {
      * Use 24-hour lookback for vitals (Fuel/SOC).
      */
     /**
-     * Fetch global vitals.
-     * Refactored to use "Per-Device Batched" fetching for high-density EV data (SOC, Charging)
-     * to avoid global limit truncation.
-     * Fuel and Cameras remain Global as they are lower density or need full sweep.
+     * Fetch Camera Status separately (requires 7-day lookback for dormant cameras).
+     * Fuel and SOC are now derived directly from DeviceStatusInfo (Snapshot).
      */
-    public async fetchGlobalVitals(devices: Device[]) {
+    public async fetchCameraStatus() {
         const now = Date.now();
-        const fromDateVitals = new Date(now - 24 * 60 * 60 * 1000).toISOString();
         const fromDateCameras = new Date(now - 7 * 24 * 60 * 60 * 1000).toISOString();
 
-        // 1. Identify Vehicles (exclude known cameras to save calls)
-        const vehicles = devices.filter(d => {
-            const name = (d.name || '').toLowerCase();
-            return !(d.deviceType === 'GO9Camera' || name.includes('camera') || name.includes('surfsight') || name.includes('lytx'));
-        });
-
-        // Helper: Global Safe Fetch (for Fuel & Cameras)
+        // Helper: Global Safe Fetch
         const fetchGlobalSafe = async (id: string, fromDate: string, limit: number, label: string) => {
             try {
                 return await this.api.call<StatusData[]>('Get', {
@@ -171,116 +165,95 @@ export class FleetDataService {
             }
         };
 
-        // Helper: Combined EV Batch Fetch (Single Pass)
-        // Fetches SOC, Charging, AC, Battery in one go per vehicle to minimize requests.
-        // Reduces request volume by 75% compared to running them separately.
-        const fetchCombinedEVMets = async () => {
-            const BATCH_SIZE = 50;
-            const CONCURRENCY_LIMIT = 5;
-            const allResults: StatusData[] = [];
+        try {
+            const [
+                cameraRoad,
+                cameraDriver,
+                cameraHealth,
+                cameraOnline,
+                cameraVib,
+                cameraSeat,
+            ] = await Promise.all([
+                fetchGlobalSafe(DiagnosticIds.CAMERA_STATUS_ROAD, fromDateCameras, 5000, 'CamRoad'),
+                fetchGlobalSafe(DiagnosticIds.CAMERA_STATUS_DRIVER, fromDateCameras, 5000, 'CamDriver'),
+                fetchGlobalSafe(DiagnosticIds.VIDEO_DEVICE_HEALTH, fromDateCameras, 5000, 'CamHealth'),
+                fetchGlobalSafe(DiagnosticIds.CAMERA_ONLINE, fromDateCameras, 5000, 'CamOnline'),
+                fetchGlobalSafe(DiagnosticIds.CAMERA_VIBRATION, fromDateCameras, 5000, 'CamVib'),
+                fetchGlobalSafe(DiagnosticIds.CAMERA_SEATBELT, fromDateCameras, 5000, 'CamSeat'),
+            ]);
 
-            const targetDiags = [
-                DiagnosticIds.STATE_OF_CHARGE,
-                DiagnosticIds.CHARGING_STATE,
-                DiagnosticIds.AC_INPUT_POWER,
-                DiagnosticIds.HV_BATTERY_POWER
-            ];
-
-            // 1. Create Batches
-            const batchConfigs: { calls: any[], index: number }[] = [];
-            for (let i = 0; i < vehicles.length; i += BATCH_SIZE) {
-                const chunk = vehicles.slice(i, i + BATCH_SIZE);
-                const calls: any[] = [];
-
-                // For each vehicle, ask for all 4 metrics at once
-                chunk.forEach(d => {
-                    targetDiags.forEach(diagId => {
-                        calls.push({
-                            method: 'Get',
-                            params: {
-                                typeName: 'StatusData',
-                                search: {
-                                    deviceSearch: { id: d.id },
-                                    diagnosticSearch: { id: diagId },
-                                    fromDate: fromDateVitals
-                                },
-                                resultsLimit: 100
-                            }
-                        });
-                    });
-                });
-
-                batchConfigs.push({ calls, index: i });
-            }
-
-            // 2. Execute in Super-Batches (Concurrency Control)
-            for (let i = 0; i < batchConfigs.length; i += CONCURRENCY_LIMIT) {
-                const currentBatch = batchConfigs.slice(i, i + CONCURRENCY_LIMIT);
-
-                const promises = currentBatch.map(config =>
-                    this.api.multiCall<StatusData[][]>(config.calls)
-                        .then(res => res.flat())
-                        .catch(e => {
-                            const msg = e instanceof Error ? e.message : String(e);
-                            console.warn(`[FleetDataService] Failed combined EV batch (Index ${config.index}): ${msg}`);
-                            return [] as StatusData[];
-                        })
-                );
-
-                const results = await Promise.all(promises);
-                results.forEach(r => allResults.push(...r));
-            }
-
-            return allResults;
-        };
-
-        // 2. Execution
-        // Parallelize Global Calls + One Big EV Batch
-        const [
-            fuelResults,
-            cameraRoad,
-            cameraDriver,
-            cameraHealth,
-            cameraOnline,
-            cameraVib,
-            cameraSeat,
-            // Combined EV Results
-            evResults
-        ] = await Promise.all([
-            // Global (Low Density)
-            fetchGlobalSafe(DiagnosticIds.FUEL_LEVEL, fromDateVitals, 5000, 'Fuel'),
-
-            // Global (Cameras)
-            fetchGlobalSafe(DiagnosticIds.CAMERA_STATUS_ROAD, fromDateCameras, 5000, 'CamRoad'),
-            fetchGlobalSafe(DiagnosticIds.CAMERA_STATUS_DRIVER, fromDateCameras, 5000, 'CamDriver'),
-            fetchGlobalSafe(DiagnosticIds.VIDEO_DEVICE_HEALTH, fromDateCameras, 5000, 'CamHealth'),
-            fetchGlobalSafe(DiagnosticIds.CAMERA_ONLINE, fromDateCameras, 5000, 'CamOnline'),
-            fetchGlobalSafe(DiagnosticIds.CAMERA_VIBRATION, fromDateCameras, 5000, 'CamVib'),
-            fetchGlobalSafe(DiagnosticIds.CAMERA_SEATBELT, fromDateCameras, 5000, 'CamSeat'),
-
-            // Combined EV Batch (High Efficiency)
-            fetchCombinedEVMets()
-        ]);
-
-        // Split Combined Results
-        const getDiagId = (d: StatusData) => typeof d.diagnostic === 'string' ? d.diagnostic : d.diagnostic.id;
-
-        const socResults = evResults.filter(d => getDiagId(d) === DiagnosticIds.STATE_OF_CHARGE);
-        const chargingResults = evResults.filter(d => getDiagId(d) === DiagnosticIds.CHARGING_STATE);
-        const acPowerResults = evResults.filter(d => getDiagId(d) === DiagnosticIds.AC_INPUT_POWER);
-        const batteryPowerResults = evResults.filter(d => getDiagId(d) === DiagnosticIds.HV_BATTERY_POWER);
-
-        return {
-            fuelResults,
-            socResults,
-            chargingResults,
-            acPowerResults,
-            batteryPowerResults,
-            cameraResults: [
+            return [
                 ...cameraRoad, ...cameraDriver, ...cameraHealth,
                 ...cameraOnline, ...cameraVib, ...cameraSeat
-            ]
-        };
+            ];
+        } catch (e) {
+            console.error('[FleetDataService] Camera Fetch Failure', e);
+            return [] as StatusData[];
+        }
+    }
+
+    /**
+     * Fetch latest Fuel & SOC for all devices using optimized batches.
+     * Strategy: MultiCall with 24-hour lookback.
+     * We fetch "Last 24 hours" of data and take the last record (latest).
+     * If 24h is empty, we accept it as "No Data" to avoid expensive deep lookups on every load.
+     */
+    async fetchBatchedVitals(devices: Device[]) {
+        const fromDate = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+        const BATCH_SIZE = 50; // 25 Vehicles x 2 Diagnostics = 50 calls
+        const allResults: StatusData[] = [];
+
+        // Diagnostics to fetch
+        const diagIds = [DiagnosticIds.FUEL_LEVEL, DiagnosticIds.STATE_OF_CHARGE];
+
+        // 1. Build All Calls
+        const allCalls: any[] = [];
+        devices.forEach(d => {
+            diagIds.forEach(id => {
+                allCalls.push({
+                    method: 'Get',
+                    params: {
+                        typeName: 'StatusData',
+                        search: {
+                            deviceSearch: { id: d.id },
+                            diagnosticSearch: { id },
+                            fromDate: fromDate
+                        },
+                        resultsLimit: 50 // Fetch recent history to ensure we get the absolute latest point in the window
+                    }
+                });
+            });
+        });
+
+        // 2. Execute in Parallel Chunks (Concurrency Limit: 5)
+        // Helps avoid slow sequential waterfalls while respecting browser connection limits.
+        const chunks: any[][] = [];
+        for (let i = 0; i < allCalls.length; i += BATCH_SIZE) {
+            chunks.push(allCalls.slice(i, i + BATCH_SIZE));
+        }
+
+        const CONCURRENCY = 5;
+        for (let i = 0; i < chunks.length; i += CONCURRENCY) {
+            const parallelBatch = chunks.slice(i, i + CONCURRENCY);
+            try {
+                const results = await Promise.all(
+                    parallelBatch.map(chunk => this.api.multiCall<StatusData[][]>(chunk).catch(e => {
+                        console.warn(`[FleetDataService] Batch chunk failed`, e);
+                        return [];
+                    }))
+                );
+
+                results.flat().forEach(r => {
+                    if (Array.isArray(r) && r.length > 0) {
+                        allResults.push(...r);
+                    }
+                });
+            } catch (e) {
+                console.warn(`[FleetDataService] Parallel batch execution error`, e);
+            }
+        }
+
+        return allResults;
     }
 
     private mergeData(
@@ -288,14 +261,8 @@ export class FleetDataService {
         statuses: DeviceStatusInfo[],
         drivers: User[],
         faults: FaultData[],
-        vitals: {
-            fuelResults: StatusData[],
-            socResults: StatusData[],
-            chargingResults: StatusData[],
-            acPowerResults: StatusData[],
-            batteryPowerResults: StatusData[],
-            cameraResults: StatusData[]
-        }
+        cameraResults: StatusData[],
+        vitalsResults: StatusData[]
     ): VehicleData[] {
         const vehicleMap = new Map<string, VehicleData>();
         const cameras: Device[] = [];
@@ -317,7 +284,7 @@ export class FleetDataService {
 
         // Pre-parse camera-related diagnostics from vitals (Global Scan)
         const diagCameraPresence = new Set<string>();
-        vitals.cameraResults.forEach(d => {
+        cameraResults.forEach(d => {
             diagCameraPresence.add(d.device.id);
         });
 
@@ -332,32 +299,44 @@ export class FleetDataService {
             driverMap.set(d.id, name);
         });
 
-        // Helpers to get Latest Value from array
-        const getLatest = (data: StatusData[]) => {
-            const map = new Map<string, number>();
-            // Sort Chronological
-            data.sort((a, b) => new Date(a.dateTime).getTime() - new Date(b.dateTime).getTime());
-            // Iterate and set (last write wins)
-            data.forEach(d => map.set(d.device.id, d.data));
-            return map;
-        };
+        // Build Vitals Map (Last Write Wins)
+        const vitalsMap = new Map<string, Map<string, number>>();
+        // 1. Sort by Date Ascending (Oldest -> Newest) so last iteration is latest
+        vitalsResults.sort((a, b) => new Date(a.dateTime).getTime() - new Date(b.dateTime).getTime());
 
-        const fuelMap = getLatest(vitals.fuelResults);
-        const socMap = getLatest(vitals.socResults);
-        const chargingMap = getLatest(vitals.chargingResults);
-        const acPowerMap = getLatest(vitals.acPowerResults);
-        const batteryPowerMap = getLatest(vitals.batteryPowerResults);
+        vitalsResults.forEach(r => {
+            const devId = r.device.id;
+            const diagId = typeof r.diagnostic === 'string' ? r.diagnostic : r.diagnostic.id;
+
+            if (!vitalsMap.has(devId)) vitalsMap.set(devId, new Map());
+            vitalsMap.get(devId)!.set(diagId, r.data);
+        });
 
         // 1. Map Vehicles
         vehiclesRaw.forEach(d => {
-            const isChargingVal = chargingMap.get(d.id);
             const s = statusMap.get(d.id);
+            const devVitals = vitalsMap.get(d.id);
+
+            // Fetch Vitals from Map
+            const fuelLevel = devVitals?.get(DiagnosticIds.FUEL_LEVEL);
+            const soc = devVitals?.get(DiagnosticIds.STATE_OF_CHARGE);
+
+            // Charging Logic (Fallback to simple status checks if needed)
+            // Note: We aren't fetching specialized EV charging diagnostics in this fallback batch to save calls.
+            // If strictly needed, we can add DiagnosticIds.CHARGING_STATE to fetchBatchedVitals.
+            let isCharging = false;
+            if (s && s.statusData) {
+                // Check DeviceStatusInfo snapshot just in case it has charging flags (unlikely if empty)
+                s.statusData.forEach(sd => {
+                    const id = typeof sd.diagnostic === 'string' ? sd.diagnostic : sd.diagnostic.id;
+                    if (id === DiagnosticIds.CHARGING_STATE && sd.data > 0) isCharging = true;
+                });
+            }
 
             // Find linked camera
             const camera = cameras.find(c => {
                 const cName = (c.name || '').toLowerCase();
                 const vName = (d.name || '').toLowerCase();
-                // Heuristic: Camera name contains vehicle name or vice-versa, or they share a suffix/prefix
                 return cName.includes(vName) || vName.includes(cName);
             });
 
@@ -370,7 +349,7 @@ export class FleetDataService {
                 camHealth = 'good'; // Default if present
 
                 // Check for health diagnostics
-                const healthLogs = vitals.cameraResults
+                const healthLogs = cameraResults
                     .filter(log => log.device.id === d.id)
                     .sort((a, b) => new Date(b.dateTime).getTime() - new Date(a.dateTime).getTime());
 
@@ -416,17 +395,14 @@ export class FleetDataService {
                 hasCriticalFaults: false,
                 hasUnrepairedDefects: false,
 
-                // Charging: > 0 means charging
-                isCharging:
-                    (isChargingVal !== undefined && isChargingVal > 0) ||
-                    (acPowerMap.get(d.id) !== undefined && (acPowerMap.get(d.id) || 0) > 0) ||
-                    (batteryPowerMap.get(d.id) !== undefined && (batteryPowerMap.get(d.id) || 0) < -100), // -100 Watts threshold
+                // Charging
+                isCharging,
 
                 driverName: 'No Driver',
                 makeModel: '--',
 
-                fuelLevel: fuelMap.get(d.id),
-                stateOfCharge: socMap.get(d.id),
+                fuelLevel: fuelLevel,
+                stateOfCharge: soc,
 
                 dormancyDays: null,
                 zoneDurationMs: null,
@@ -713,4 +689,6 @@ export class FleetDataService {
             statusData
         };
     }
+
+
 }

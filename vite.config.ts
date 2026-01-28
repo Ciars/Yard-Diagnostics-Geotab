@@ -14,6 +14,10 @@ export default defineConfig({
             '@': path.resolve(__dirname, './src'),
         },
     },
+    define: {
+        __APP_VERSION__: JSON.stringify(process.env.npm_package_version || '1.0.0'),
+        __BUILD_TIMESTAMP__: JSON.stringify(new Date().toISOString()),
+    },
     // Security: Logs enabled for debugging (Temporary)
     // esbuild: {
     //    drop: ['console', 'debugger'],

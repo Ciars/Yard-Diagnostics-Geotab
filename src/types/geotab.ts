@@ -65,6 +65,7 @@ export interface DeviceStatusInfo {
     dateTime: string;
     groups?: EntityReference[];
     isInCurrentZones?: boolean;
+    statusData?: StatusData[];
 }
 
 export interface StatusData {
