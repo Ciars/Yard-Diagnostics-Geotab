@@ -815,7 +815,7 @@ export class FleetDataService {
             const driverIds = Array.from(new Set(
                 vehicles.map(v => v.status.driver?.id).filter(Boolean)
             )) as string[];
-
+            console.log(`[enrichVehicleData] Found ${driverIds.length} drivers to fetch`);
 
 
             // 3. Parallel Single-Vehicle Telemetry Fetch (Ultra-Resilient)
@@ -830,7 +830,10 @@ export class FleetDataService {
             const diagMap = new Map<string, Map<string, number>>();
             let telemetryCount = 0;
 
+            console.log(`[enrichVehicleData] Starting telemetry loop. Concurrency: ${CONCURRENCY_LIMIT}`);
+
             const processVehicle = async (v: VehicleData) => {
+                // console.log(`[enrichVehicleData] Processing vehicle ${v.device.id}`); // Uncomment for extreme verbosity
                 // Standard Diagnostic IDs only (Sanitized)
                 const safeDiagnostics = [
                     { id: DiagnosticIds.FUEL_LEVEL },
