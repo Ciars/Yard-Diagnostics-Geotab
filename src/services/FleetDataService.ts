@@ -811,13 +811,31 @@ export class FleetDataService {
         try {
             console.log(`[enrichVehicleData] Starting optimized enrichment for ${vehicles.length} vehicles...`);
 
-            // 1. Gather unique Driver IDs for targeted fetch
-            const driverIds = Array.from(new Set(
-                vehicles.map(v => v.status.driver?.id).filter(Boolean)
-            )) as string[];
-            console.log(`[enrichVehicleData] Found ${driverIds.length} drivers to fetch`);
+            // 1. Bulk Fetch Drivers (PERFORMANCE FIX)
+            // Instead of N+1 calls, we fetch all active drivers in one go.
+            // This is infinitely faster for 50-100 vehicles.
+            const driverMap = new Map<string, string>();
+            const driverStart = Date.now();
+            try {
+                // Fetch up to 5000 users. For most fleets this covers everyone.
+                const users = await this.api.call<User[]>('Get', {
+                    typeName: 'User',
+                    search: {
+                        isDriver: true
+                    },
+                    resultsLimit: 5000
+                });
 
-            // 3. Pure Parallel Single-Call Strategy (Definitive Fix)
+                users.forEach(u => {
+                    const name = (u.firstName && u.lastName) ? `${u.firstName} ${u.lastName}` : (u.name || 'Unknown User');
+                    driverMap.set(u.id, name);
+                });
+                console.log(`[enrichVehicleData] Bulk driver fetch: ${users.length} drivers in ${Date.now() - driverStart}ms`);
+            } catch (e) {
+                console.warn('[enrichVehicleData] Bulk driver fetch failed', e);
+            }
+
+            // 3. Pure Parallel Single-Call Strategy (Telemetry)
             const CONCURRENCY_LIMIT = 4;
             const diagMap = new Map<string, Map<string, number>>();
             const faultMap = new Map<string, FaultData[]>();
@@ -836,7 +854,6 @@ export class FleetDataService {
                     { id: DiagnosticIds.CAMERA_ONLINE },
                     { id: DiagnosticIds.VIDEO_DEVICE_HEALTH },
                     { id: DiagnosticIds.CAMERA_STATUS_ROAD },
-                    // { id: "DiagnosticSurfsightStatusId" } // Optional, add if needed
                 ];
 
                 const promises: Promise<any>[] = [];
@@ -863,7 +880,7 @@ export class FleetDataService {
                         deviceSearch: { id: v.device.id },
                         fromDate: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
                     },
-                    resultsLimit: 50 // Cap to prevent massive payloads
+                    resultsLimit: 10
                 }).then(results => ({ type: 'fault', results }))
                     .catch(e => ({ type: 'fault', error: e, results: [] }));
 
@@ -890,38 +907,7 @@ export class FleetDataService {
                 await Promise.all(chunk.map(v => processVehicle(v)));
             }
 
-            // 4. Driver Names (Parallel Single Calls)
-            // Replaced multiCall with parallel api.call
-            const driverMap = new Map<string, string>();
-            if (driverIds.length > 0) {
-                console.log(`[enrichVehicleData] Fetching ${driverIds.length} drivers...`);
-
-                // Concurrency for drivers (can be higher, requests are light)
-                const DRIVER_CONCURRENCY = 6;
-
-                const processDriver = async (id: string) => {
-                    return this.api.call<User[]>('Get', {
-                        typeName: 'User',
-                        search: { id },
-                        resultsLimit: 1
-                    }).then(users => {
-                        if (users && users.length > 0) {
-                            const user = users[0];
-                            const name = (user.firstName && user.lastName) ? `${user.firstName} ${user.lastName}` : (user.name || 'Unknown User');
-                            driverMap.set(id, name);
-                        }
-                    }).catch(e => {
-                        console.warn(`[enrichVehicleData] Failed to fetch driver ${id}`, e);
-                    });
-                };
-
-                for (let i = 0; i < driverIds.length; i += DRIVER_CONCURRENCY) {
-                    const chunk = driverIds.slice(i, i + DRIVER_CONCURRENCY);
-                    await Promise.all(chunk.map(id => processDriver(id)));
-                }
-            }
-
-            console.log(`[enrichVehicleData] IDENTIFIED: ${diagMap.size} vehicles with data, ${driverMap.size} drivers, ${faultMap.size} vehicles with faults`);
+            console.log(`[enrichVehicleData] IDENTIFIED: ${diagMap.size} vehicles with data`);
 
             // 5. Build Final Vehicle List
             return vehicles.map(v => {
