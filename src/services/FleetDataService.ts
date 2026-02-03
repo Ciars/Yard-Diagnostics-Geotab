@@ -649,9 +649,28 @@ export class FleetDataService {
                 percentSilent: Math.round((silentDevices.length / zoneDevices.length) * 100) + '%'
             });
 
+            // STEP 3.5: Fetch diagnostics (optional - graceful degradation if fails)
             const diagStart = Date.now();
-            const silentDiagnostics = await this.fetchVehicleDiagnostics(silentDevices);
-            console.log(`[getVehicleDataForZone] Diagnostics fetched in ${Date.now() - diagStart}ms`);
+            let silentDiagnostics: StatusData[] = [];
+
+            try {
+                // Only attempt diagnostic fetch if we have silent devices
+                if (silentDevices.length > 0) {
+                    console.log(`[getVehicleDataForZone] Fetching diagnostics for ${silentDevices.length} devices...`);
+                    silentDiagnostics = await this.fetchVehicleDiagnostics(silentDevices);
+                    console.log(`[getVehicleDataForZone] Diagnostics fetched in ${Date.now() - diagStart}ms`);
+                } else {
+                    console.log(`[getVehicleDataForZone] No silent devices, skipping diagnostic fetch`);
+                }
+            } catch (error) {
+                // GRACEFUL DEGRADATION: If diagnostic fetch fails, continue with statusData
+                console.warn(
+                    `[getVehicleDataForZone] Diagnostic fetch failed (${silentDevices.length} devices). ` +
+                    `Continuing with statusData snapshots only.`,
+                    error
+                );
+                // silentDiagnostics remains empty array - merge will use statusData instead
+            }
 
             // STEP 4: Merge and return
             const mergeStart = Date.now();
