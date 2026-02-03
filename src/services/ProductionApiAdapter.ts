@@ -37,7 +37,10 @@ export class ProductionApiAdapter implements IGeotabApi {
      */
     async call<T>(method: string, params: Record<string, unknown>): Promise<T> {
         const startTime = Date.now();
-        const typeName = params.typeName || 'unknown';
+        const typeName = (params.typeName as string) || 'unknown';
+
+        // DEBUG: Log exact payload
+        console.log(`[ProductionAPI] SENDING call: ${method}`, JSON.stringify(params));
 
         return new Promise((resolve, reject) => {
             this.api.call<T>(
@@ -65,6 +68,9 @@ export class ProductionApiAdapter implements IGeotabApi {
      * from crashing the entire data load.
      */
     async multiCall<T extends unknown[]>(calls: ApiCall[]): Promise<T> {
+        // DEBUG: Log exact payload
+        console.log(`[ProductionAPI] SENDING multiCall: ${calls.length} items`, JSON.stringify(calls));
+
         return new Promise((resolve) => {
             this.api.multiCall<T>(
                 calls,

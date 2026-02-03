@@ -822,57 +822,52 @@ export class FleetDataService {
             // We fetch each vehicle's data individually (in parallel) to avoid "Massive MultiCall" server errors.
             // Concurrency Limit: 5 simultaneous HTTP requests.
 
+            // RESEARCH PROBE: Replaced main loop with diagnostic probe
+            /*
             const CONCURRENCY_LIMIT = 5;
+            const processVehicle = async (v: VehicleData) => { ... }
+            for (let i = 0; i < vehicles.length; i += CONCURRENCY_LIMIT) { ... }
+            */
             const diagMap = new Map<string, Map<string, number>>();
             let telemetryCount = 0;
 
-            const processVehicle = async (v: VehicleData) => {
-                const vehicleCalls: any[] = [];
-                // Only use KNOWN VALID diagnostic IDs to prevent GenericException
-                const safeDiagnostics = [
-                    { id: DiagnosticIds.FUEL_LEVEL },
-                    { id: DiagnosticIds.STATE_OF_CHARGE },
-                    { id: DiagnosticIds.BATTERY_VOLTAGE }
-                ];
+            // PROBE LOGIC
+            if (vehicles.length > 0) {
+                const probeVehicle = vehicles[0];
+                console.log(`[ResearchProbe] starting probe for vehicle ${probeVehicle.device.id}`);
 
-                safeDiagnostics.forEach(diag => {
-                    vehicleCalls.push({
+                // Probe A: Single Call
+                try {
+                    await this.api.call('Get', {
+                        typeName: 'StatusData',
+                        search: {
+                            deviceSearch: { id: probeVehicle.device.id },
+                            diagnosticSearch: { id: DiagnosticIds.FUEL_LEVEL }
+                        },
+                        resultsLimit: 1
+                    });
+                    console.log('[ResearchProbe] Single Call SUCCESS');
+                } catch (e) {
+                    console.error('[ResearchProbe] Single Call FAILED', e);
+                }
+
+                // Probe B: MultiCall Wrapper
+                try {
+                    await this.api.multiCall([{
                         method: 'Get',
                         params: {
                             typeName: 'StatusData',
                             search: {
-                                deviceSearch: { id: v.device.id },
-                                diagnosticSearch: { id: diag.id }
+                                deviceSearch: { id: probeVehicle.device.id },
+                                diagnosticSearch: { id: DiagnosticIds.FUEL_LEVEL }
                             },
                             resultsLimit: 1
                         }
-                    });
-                });
-
-                try {
-                    // This multiCall adds ~8 sub-requests for ONE vehicle. Perfectly safe.
-                    const results = await this.api.multiCall<any[]>(vehicleCalls);
-                    results.flat().forEach((item: any) => {
-                        if (!item || typeof item !== 'object') return;
-                        const devId = (item.device?.id || item.device) as string;
-                        const diagId = (typeof item.diagnostic === 'string' ? item.diagnostic : item.diagnostic?.id) as string;
-
-                        if (devId && diagId && typeof item.data === 'number') {
-                            if (!diagMap.has(devId)) diagMap.set(devId, new Map());
-                            diagMap.get(devId)!.set(diagId, item.data);
-                            telemetryCount++;
-                        }
-                    });
+                    }]);
+                    console.log('[ResearchProbe] MultiCall Wrapper SUCCESS');
                 } catch (e) {
-                    // Log partial failure but don't stop other vehicles
-                    console.warn(`[enrichVehicleData] Failed for vehicle ${v.device.id}:`, e);
+                    console.error('[ResearchProbe] MultiCall Wrapper FAILED', e);
                 }
-            };
-
-            // Execute in chunks to respect concurrency
-            for (let i = 0; i < vehicles.length; i += CONCURRENCY_LIMIT) {
-                const chunk = vehicles.slice(i, i + CONCURRENCY_LIMIT);
-                await Promise.all(chunk.map(v => processVehicle(v)));
             }
 
             // 4. Driver Names (Small multiCall)
