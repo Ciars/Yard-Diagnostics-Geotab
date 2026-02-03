@@ -807,35 +807,30 @@ export class FleetDataService {
     async enrichVehicleData(vehicles: VehicleData[]): Promise<VehicleData[]> {
         if (!vehicles.length) return vehicles;
 
+        const startTime = Date.now();
         try {
-            console.log(`[enrichVehicleData] Starting enrichment for ${vehicles.length} vehicles...`);
+            console.log(`[enrichVehicleData] Starting optimized enrichment for ${vehicles.length} vehicles...`);
 
-            // 1. Fetch Drivers and Faults in parallel
-            const [drivers, faults] = await Promise.all([
-                this.api.call<User[]>('Get', {
-                    typeName: 'User',
-                    search: { userSearch: { driverGroups: true } },
-                    resultsLimit: 50000
-                }),
-                this.api.call<FaultData[]>('Get', {
-                    typeName: 'FaultData',
-                    search: { fromDate: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString() },
-                    resultsLimit: 50000
-                })
-            ]);
+            // 1. Gather all unique IDs to minimize calls
+            const deviceIds = vehicles.map(v => v.device.id);
+            const driverIds = Array.from(new Set(
+                vehicles.map(v => v.status.driver?.id).filter(Boolean)
+            )) as string[];
 
-            // 2. Fetch SOC and Fuel via batched multiCall (to avoid GenericException)
-            const diagIds = [DiagnosticIds.FUEL_LEVEL, DiagnosticIds.STATE_OF_CHARGE];
+            // 2. Build targeted multiCall pool
             const enrichCalls: any[] = [];
+
+            // A. SOC and Fuel Diagnostics (2 calls per device)
+            const telemetryDiagIds = [DiagnosticIds.FUEL_LEVEL, DiagnosticIds.STATE_OF_CHARGE];
             vehicles.forEach(v => {
-                diagIds.forEach(id => {
+                telemetryDiagIds.forEach(diagId => {
                     enrichCalls.push({
                         method: 'Get',
                         params: {
                             typeName: 'StatusData',
                             search: {
                                 deviceSearch: { id: v.device.id },
-                                diagnosticSearch: { id },
+                                diagnosticSearch: { id: diagId },
                                 resultsLimit: 1
                             }
                         }
@@ -843,43 +838,84 @@ export class FleetDataService {
                 });
             });
 
-            const allDiagResults: StatusData[] = [];
-            const BATCH_SIZE = 90;
+            // B. Targeted Driver Name Fetch (1 call per unique driver ID)
+            driverIds.forEach(id => {
+                enrichCalls.push({
+                    method: 'Get',
+                    params: {
+                        typeName: 'User',
+                        search: { id },
+                        resultsLimit: 1
+                    }
+                });
+            });
 
+            // C. Targeted Fault Fetch (1 call per device for last 30 days)
+            const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+            deviceIds.forEach(id => {
+                enrichCalls.push({
+                    method: 'Get',
+                    params: {
+                        typeName: 'FaultData',
+                        search: {
+                            deviceSearch: { id },
+                            fromDate: thirtyDaysAgo
+                        },
+                        resultsLimit: 50 // Enough to catch recent history per device
+                    }
+                });
+            });
+
+            console.log(`[enrichVehicleData] Total targeted calls to execute: ${enrichCalls.length}`);
+
+            // 3. Execute in parallel batches
+            const BATCH_SIZE = 90;
+            const batchPromises: Promise<any[]>[] = [];
             for (let i = 0; i < enrichCalls.length; i += BATCH_SIZE) {
                 const chunk = enrichCalls.slice(i, i + BATCH_SIZE);
-                try {
-                    const batchResults = await this.api.multiCall<any[]>(chunk);
-                    const validResults = batchResults.flat().filter((r: any) => r && r.device);
-                    allDiagResults.push(...validResults);
-                } catch (e) {
-                    console.warn(`[enrichVehicleData] Batch diagnostic fetch failed:`, e);
-                }
+                batchPromises.push(this.api.multiCall<any[]>(chunk));
             }
 
-            // Create Maps for fast lookup
+            const allBatchResults = await Promise.all(batchPromises);
+            const flatResults = allBatchResults.flat();
+
+            // 4. Process Results into lookup maps
             const driverMap = new Map<string, string>();
-            drivers.forEach(d => {
-                const name = (d.firstName && d.lastName) ? `${d.firstName} ${d.lastName}` : d.name;
-                driverMap.set(d.id, name);
-            });
-
             const faultMap = new Map<string, FaultData[]>();
-            faults.forEach(f => {
-                const devId = f.device.id;
-                if (!faultMap.has(devId)) faultMap.set(devId, []);
-                faultMap.get(devId)!.push(f);
-            });
-
             const diagMap = new Map<string, Map<string, number>>();
-            allDiagResults.forEach(r => {
-                const devId = r.device.id;
-                const diagId = typeof r.diagnostic === 'string' ? r.diagnostic : r.diagnostic.id;
-                if (!diagMap.has(devId)) diagMap.set(devId, new Map());
-                diagMap.get(devId)!.set(diagId, r.data);
+
+            flatResults.forEach((result: any) => {
+                if (!result) return;
+
+                // Handle arrays (likely FaultData results) vs single objects (likely User/StatusData)
+                const items = Array.isArray(result) ? result : [result];
+                if (items.length === 0) return;
+
+                items.forEach((item: any) => {
+                    if (!item) return;
+
+                    // It's a User (Driver)
+                    if (item.name && !item.device && !item.diagnostic) {
+                        const name = (item.firstName && item.lastName) ? `${item.firstName} ${item.lastName}` : item.name;
+                        driverMap.set(item.id, name);
+                    }
+                    // It's FaultData
+                    else if (item.device && item.diagnostic && item.controller) {
+                        const devId = item.device.id;
+                        if (!faultMap.has(devId)) faultMap.set(devId, []);
+                        faultMap.get(devId)!.push(item as FaultData);
+                    }
+                    // It's StatusData (Telemetry)
+                    else if (item.device && item.diagnostic && typeof item.data === 'number') {
+                        const devId = item.device.id;
+                        const diagId = typeof item.diagnostic === 'string' ? item.diagnostic : item.diagnostic.id;
+                        if (!diagMap.has(devId)) diagMap.set(devId, new Map());
+                        diagMap.get(devId)!.set(diagId, item.data);
+                    }
+                });
             });
 
-            // Update vehicles
+            // 5. Build enriched vehicle list
             const enrichedVehicles = vehicles.map(v => {
                 const deviceId = v.device.id;
                 const vFaults = faultMap.get(deviceId) || [];
@@ -903,10 +939,10 @@ export class FleetDataService {
                 };
             });
 
-            console.log(`[enrichVehicleData] Enrichment complete (including SOC/Fuel)`);
+            console.log(`[enrichVehicleData] Enrichment complete in ${Date.now() - startTime}ms`);
             return enrichedVehicles;
         } catch (error) {
-            console.warn(`[enrichVehicleData] Enrichment failed (non-critical):`, error);
+            console.warn(`[enrichVehicleData] Enrichment failed after ${Date.now() - startTime}ms:`, error);
             return vehicles;
         }
     }
