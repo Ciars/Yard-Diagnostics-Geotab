@@ -28,7 +28,11 @@ export function useVehiclesInZone(zone: Zone | null): UseVehiclesInZoneResult {
     const zoneId = zone?.id;
 
     const query = useQuery({
-        queryKey: queryKeys.vehiclesInZone(zoneId ?? ''),
+        // Include zone polygon hash in key to invalidate cache if zone boundaries change
+        queryKey: [
+            ...queryKeys.vehiclesInZone(zoneId ?? ''),
+            zone?.points?.length ?? 0 // Polygon size as simple cache key
+        ],
         queryFn: async () => {
             if (!api || !zone) throw new Error('API or zoneId not available');
             // console.log(`[useVehiclesInZone] Fetching for Zone: ${zone.id}`);

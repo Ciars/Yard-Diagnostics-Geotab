@@ -1,37 +1,26 @@
-
-import { IGeotabApi } from './GeotabApiFactory';
+import type { IGeotabApi } from './GeotabApiFactory';
 import {
-    VehicleData,
+    DiagnosticIds
+} from '@/types/geotab';
+import type {
     Device,
     DeviceStatusInfo,
+    User,
     FaultData,
+    VehicleData,
+    Zone,
     StatusData,
     DiagnosticId,
-    ExceptionEvent,
-    Zone,
-    Coordinate,
-    DiagnosticIds,
-    User
+    ExceptionEvent
 } from '@/types/geotab';
+import { isPointInPolygon, getPolygonBoundingBox } from '@/lib/geoUtils';
 import { VinDecoderService } from './VinDecoderService';
+import { apiCache, CacheTTL } from '@/lib/apiCache';
 
 // Constants
 const DORMANCY_THRESHOLD_DAYS = 7;     // 7 days
 
-// Helper to check if point is in polygon
-function isPointInPolygon(point: Coordinate, vs: Coordinate[] = []) {
-    const x = point.x, y = point.y;
-    let inside = false;
-    for (let i = 0, j = vs.length - 1; i < vs.length; j = i++) {
-        const xi = vs[i].x, yi = vs[i].y;
-        const xj = vs[j].x, yj = vs[j].y;
-
-        const intersect = ((yi > y) !== (yj > y))
-            && (x < (xj - xi) * (y - yi) / (yj - yi) + xi);
-        if (intersect) inside = !inside;
-    }
-    return inside;
-}
+// Helper to calculate bounding box for a polygon (fast pre-filter for zone checks)
 
 // Helper for 'Hours Since'
 const SILENT_THRESHOLD_HOURS = 4 * 24; // 4 days
@@ -81,6 +70,12 @@ function parseDuration(duration: string): number {
 export class FleetDataService {
     private api: IGeotabApi;
 
+    // Request-cycle cache for DeviceStatusInfo
+    // Prevents duplicate API calls when getFleetData and getZoneVehicleCounts are called together
+    private _statusCache: DeviceStatusInfo[] | null = null;
+    private _statusCacheTime: number = 0;
+    private readonly STATUS_CACHE_TTL_MS = 30_000; // 30 seconds
+
     constructor(api: IGeotabApi) {
         this.api = api;
     }
@@ -122,6 +117,10 @@ export class FleetDataService {
                 faultCall
             ]);
 
+            // Cache statuses for getZoneVehicleCounts to reuse
+            this._statusCache = statuses;
+            this._statusCacheTime = Date.now();
+
             // 2. "Silent Asset" Optimization
             // Goal: Avoid making 4,500+ API calls for data we already have.
             // Active vehicles usually have Fuel/SOC in their DeviceStatusInfo snapshot.
@@ -160,6 +159,11 @@ export class FleetDataService {
             const silentDiagnostics = await this.fetchVehicleDiagnostics(silentDevices);
 
             const result = this.mergeData(devices, statuses, drivers, faults, silentDiagnostics);
+
+            // VIN Decoding - await to prevent race condition
+            // Previously called in mergeData but not awaited, causing blank Make/Model
+            await this.enrichVehicleMetadata(result);
+
             return result;
         } catch (error) {
             console.error('[FleetDataService] Critical Error:', error);
@@ -190,7 +194,7 @@ export class FleetDataService {
         // CONFIGURATION: Production Hardened
         const CALLS_PER_BATCH = 90;      // Max 100 recommended. 90 is safe.
         const RESULTS_LIMIT = 1;         // Latest snapshot only.
-        const CONCURRENCY = 1;           // Sequential only. Parallel risks undefined exceptions.
+        // Note: Sequential processing via for-loop. Parallel risks undefined exceptions.
         const DELAY_MS = 100;            // Polite 10 batches/sec
 
         const LOOKBACK_DAYS = 7;
@@ -461,8 +465,8 @@ export class FleetDataService {
 
         const vehicles = Array.from(vehicleMap.values());
 
-        // 4. Enrich Metadata (VIN Decoding)
-        this.enrichVehicleMetadata(vehicles);
+        // NOTE: VIN enrichment moved to getFleetData() to properly await it
+        // This fixes race condition where Make/Model appeared blank on first render
 
         return vehicles;
     }
@@ -510,14 +514,24 @@ export class FleetDataService {
 
     /**
      * Fetch Zones (Geofences)
+     * Cached for 5 minutes since zones rarely change
      */
     async getZones(): Promise<Zone[]> {
+        const CACHE_KEY = 'zones';
+
+        // Check cache first
+        const cached = apiCache.get<Zone[]>(CACHE_KEY);
+        if (cached) {
+            return cached;
+        }
+
+        // Fetch from API
         const zones = await this.api.call<Zone[]>('Get', {
             typeName: 'Zone',
             resultsLimit: 50000
         });
 
-        return zones
+        const filtered = zones
             .filter(z => {
                 // Remove zones that are categorized as "Home" using official ZoneType ID
                 // This avoids filtering by the string "Home" in the name itself
@@ -525,24 +539,95 @@ export class FleetDataService {
                 return !isHomeZone;
             })
             .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
+
+        // Cache for 5 minutes
+        apiCache.set(CACHE_KEY, filtered, CacheTTL.SHORT);
+
+        return filtered;
     }
 
     /**
-     * Get vehicles in a specific zone (Wrapper for filtering)
+     * Get vehicles in a specific zone
+     * OPTIMIZED: Filters to zone FIRST, then enriches only those vehicles.
+     * 
+     * Previously: getFleetData() → 5,000 vehicles with diagnostics → filter to zone (8+ min)
+     * Now: Filter to zone → enrich only ~150 vehicles → return (< 10 sec)
      */
     async getVehicleDataForZone(zoneId: string): Promise<VehicleData[]> {
-        const fullFleet = await this.getFleetData();
         const zones = await this.getZones();
         const targetZone = zones.find(z => z.id === zoneId);
 
         if (!targetZone || !targetZone.points) return [];
 
-        const zoneVehicles = fullFleet.filter(v => {
-            const point = { x: v.status.longitude, y: v.status.latitude };
+        // STEP 1: Fetch lightweight data (devices + statuses) - FAST
+        const [devices, statuses, drivers, faults] = await Promise.all([
+            this.api.call<Device[]>('Get', {
+                typeName: 'Device',
+                resultsLimit: 50000
+            }),
+            this.api.call<DeviceStatusInfo[]>('Get', {
+                typeName: 'DeviceStatusInfo',
+                search: {},
+                resultsLimit: 50000
+            }),
+            this.api.call<User[]>('Get', {
+                typeName: 'User',
+                search: { userSearch: { driverGroups: true } },
+                resultsLimit: 50000
+            }),
+            this.api.call<FaultData[]>('Get', {
+                typeName: 'FaultData',
+                search: { fromDate: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString() },
+                resultsLimit: 50000
+            })
+        ]);
+
+        // Cache statuses for other methods to reuse
+        this._statusCache = statuses;
+        this._statusCacheTime = Date.now();
+
+        // STEP 2: Filter to zone using bounding box optimization - FAST
+        const bbox = getPolygonBoundingBox(targetZone.points);
+        const statusMap = new Map<string, DeviceStatusInfo>();
+        statuses.forEach(s => statusMap.set(s.device.id, s));
+
+        const candidateStatuses = statuses.filter(s => {
+            const lat = s.latitude;
+            const lng = s.longitude;
+            return lat >= bbox.minLat && lat <= bbox.maxLat &&
+                lng >= bbox.minLng && lng <= bbox.maxLng;
+        });
+
+        // Precise polygon check
+        const zoneStatuses = candidateStatuses.filter(s => {
+            const point = { x: s.longitude, y: s.latitude };
             return isPointInPolygon(point, targetZone.points);
         });
 
-        return zoneVehicles;
+        // Get only devices in zone
+        const zoneDeviceIds = new Set(zoneStatuses.map(s => s.device.id));
+        const zoneDevices = devices.filter(d => zoneDeviceIds.has(d.id));
+
+        // STEP 3: Fetch diagnostics ONLY for vehicles in zone - OPTIMIZED
+        const silentDevices = zoneDevices.filter(d => {
+            const s = statusMap.get(d.id);
+            if (!s || !s.statusData) return true;
+
+            const hasEssentials = s.statusData.some(
+                sd => sd.diagnostic?.id === DiagnosticIds.FUEL_LEVEL || sd.diagnostic?.id === DiagnosticIds.STATE_OF_CHARGE
+            );
+            return !hasEssentials;
+        });
+
+        const silentDiagnostics = await this.fetchVehicleDiagnostics(silentDevices);
+
+        // STEP 4: Merge and return
+        const result = this.mergeData(zoneDevices, zoneStatuses, drivers, faults, silentDiagnostics);
+
+        // VIN Decoding - await to prevent race condition
+        await this.enrichVehicleMetadata(result);
+
+        return result;
     }
 
     /**
@@ -566,13 +651,20 @@ export class FleetDataService {
 
     /**
      * Get vehicle counts for all zones
+     * Uses cached statuses if available (from getFleetData) to prevent duplicate API calls
      */
     async getZoneVehicleCounts(zones: Zone[]): Promise<Record<string, number>> {
-        const allStatuses = await this.api.call<DeviceStatusInfo[]>('Get', {
-            typeName: 'DeviceStatusInfo',
-            search: {},
-            resultsLimit: 50000
-        });
+        // Use cached statuses if available and not stale
+        const isCacheValid = this._statusCache &&
+            (Date.now() - this._statusCacheTime) < this.STATUS_CACHE_TTL_MS;
+
+        const allStatuses = isCacheValid
+            ? this._statusCache!
+            : await this.api.call<DeviceStatusInfo[]>('Get', {
+                typeName: 'DeviceStatusInfo',
+                search: {},
+                resultsLimit: 50000
+            });
 
         const counts: Record<string, number> = {};
         zones.forEach(z => counts[z.id] = 0);

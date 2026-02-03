@@ -48,13 +48,22 @@ export class ProductionApiAdapter implements IGeotabApi {
 
     /**
      * Execute multiple API calls in a batch (promisified)
+     * 
+     * RESILIENT: On error, returns empty arrays instead of rejecting entirely.
+     * This matches DevAuthShim behavior and prevents single call failures
+     * from crashing the entire data load.
      */
     async multiCall<T extends unknown[]>(calls: ApiCall[]): Promise<T> {
-        return new Promise((resolve, reject) => {
+        return new Promise((resolve) => {
             this.api.multiCall<T>(
                 calls,
                 (results) => resolve(results),
-                (error) => reject(this.normalizeError(error))
+                (error) => {
+                    // Log but don't throw - return empty arrays for failed calls
+                    console.error('[ProductionApiAdapter] multiCall partial failure:', this.normalizeError(error));
+                    // Fallback: return array of empty results matching call count
+                    resolve(calls.map(() => []) as T);
+                }
             );
         });
     }
