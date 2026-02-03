@@ -554,80 +554,121 @@ export class FleetDataService {
      * Now: Filter to zone → enrich only ~150 vehicles → return (< 10 sec)
      */
     async getVehicleDataForZone(zoneId: string): Promise<VehicleData[]> {
-        const zones = await this.getZones();
-        const targetZone = zones.find(z => z.id === zoneId);
+        const startTime = Date.now();
+        console.log(`[getVehicleDataForZone] Starting for zone: ${zoneId}`);
 
-        if (!targetZone || !targetZone.points) return [];
+        try {
+            const zones = await this.getZones();
+            const targetZone = zones.find(z => z.id === zoneId);
 
-        // STEP 1: Fetch lightweight data (devices + statuses) - FAST
-        const [devices, statuses, drivers, faults] = await Promise.all([
-            this.api.call<Device[]>('Get', {
-                typeName: 'Device',
-                resultsLimit: 50000
-            }),
-            this.api.call<DeviceStatusInfo[]>('Get', {
-                typeName: 'DeviceStatusInfo',
-                search: {},
-                resultsLimit: 50000
-            }),
-            this.api.call<User[]>('Get', {
-                typeName: 'User',
-                search: { userSearch: { driverGroups: true } },
-                resultsLimit: 50000
-            }),
-            this.api.call<FaultData[]>('Get', {
-                typeName: 'FaultData',
-                search: { fromDate: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString() },
-                resultsLimit: 50000
-            })
-        ]);
+            if (!targetZone || !targetZone.points) {
+                console.warn(`[getVehicleDataForZone] Zone not found or has no points: ${zoneId}`);
+                return [];
+            }
 
-        // Cache statuses for other methods to reuse
-        this._statusCache = statuses;
-        this._statusCacheTime = Date.now();
+            console.log(`[getVehicleDataForZone] Zone found: ${targetZone.name}, fetching lightweight data...`);
 
-        // STEP 2: Filter to zone using bounding box optimization - FAST
-        const bbox = getPolygonBoundingBox(targetZone.points);
-        const statusMap = new Map<string, DeviceStatusInfo>();
-        statuses.forEach(s => statusMap.set(s.device.id, s));
+            // STEP 1: Fetch lightweight data (devices + statuses) - FAST
+            const fetchStart = Date.now();
+            const [devices, statuses, drivers, faults] = await Promise.all([
+                this.api.call<Device[]>('Get', {
+                    typeName: 'Device',
+                    resultsLimit: 50000
+                }),
+                this.api.call<DeviceStatusInfo[]>('Get', {
+                    typeName: 'DeviceStatusInfo',
+                    search: {},
+                    resultsLimit: 50000
+                }),
+                this.api.call<User[]>('Get', {
+                    typeName: 'User',
+                    search: { userSearch: { driverGroups: true } },
+                    resultsLimit: 50000
+                }),
+                this.api.call<FaultData[]>('Get', {
+                    typeName: 'FaultData',
+                    search: { fromDate: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString() },
+                    resultsLimit: 50000
+                })
+            ]);
 
-        const candidateStatuses = statuses.filter(s => {
-            const lat = s.latitude;
-            const lng = s.longitude;
-            return lat >= bbox.minLat && lat <= bbox.maxLat &&
-                lng >= bbox.minLng && lng <= bbox.maxLng;
-        });
+            console.log(`[getVehicleDataForZone] Lightweight data fetched in ${Date.now() - fetchStart}ms:`, {
+                devices: devices.length,
+                statuses: statuses.length,
+                drivers: drivers.length,
+                faults: faults.length
+            });
 
-        // Precise polygon check
-        const zoneStatuses = candidateStatuses.filter(s => {
-            const point = { x: s.longitude, y: s.latitude };
-            return isPointInPolygon(point, targetZone.points);
-        });
+            // Cache statuses for other methods to reuse
+            this._statusCache = statuses;
+            this._statusCacheTime = Date.now();
 
-        // Get only devices in zone
-        const zoneDeviceIds = new Set(zoneStatuses.map(s => s.device.id));
-        const zoneDevices = devices.filter(d => zoneDeviceIds.has(d.id));
+            // STEP 2: Filter to zone using bounding box optimization - FAST
+            const filterStart = Date.now();
+            const bbox = getPolygonBoundingBox(targetZone.points);
+            const statusMap = new Map<string, DeviceStatusInfo>();
+            statuses.forEach(s => statusMap.set(s.device.id, s));
 
-        // STEP 3: Fetch diagnostics ONLY for vehicles in zone - OPTIMIZED
-        const silentDevices = zoneDevices.filter(d => {
-            const s = statusMap.get(d.id);
-            if (!s || !s.statusData) return true;
+            const candidateStatuses = statuses.filter(s => {
+                const lat = s.latitude;
+                const lng = s.longitude;
+                return lat >= bbox.minLat && lat <= bbox.maxLat &&
+                    lng >= bbox.minLng && lng <= bbox.maxLng;
+            });
 
-            const hasEssentials = s.statusData.some(
-                sd => sd.diagnostic?.id === DiagnosticIds.FUEL_LEVEL || sd.diagnostic?.id === DiagnosticIds.STATE_OF_CHARGE
-            );
-            return !hasEssentials;
-        });
+            // Precise polygon check
+            const zoneStatuses = candidateStatuses.filter(s => {
+                const point = { x: s.longitude, y: s.latitude };
+                return isPointInPolygon(point, targetZone.points);
+            });
 
-        const silentDiagnostics = await this.fetchVehicleDiagnostics(silentDevices);
+            // Get only devices in zone
+            const zoneDeviceIds = new Set(zoneStatuses.map(s => s.device.id));
+            const zoneDevices = devices.filter(d => zoneDeviceIds.has(d.id));
 
-        // STEP 4: Merge and return
-        const result = this.mergeData(zoneDevices, zoneStatuses, drivers, faults, silentDiagnostics);
+            console.log(`[getVehicleDataForZone] Zone filtering completed in ${Date.now() - filterStart}ms:`, {
+                candidates: candidateStatuses.length,
+                inZone: zoneStatuses.length,
+                zoneDevices: zoneDevices.length
+            });
 
-        // VIN Decoding - await to prevent race condition
-        await this.enrichVehicleMetadata(result);
+            // STEP 3: Fetch diagnostics ONLY for vehicles in zone - OPTIMIZED
+            const silentCheckStart = Date.now();
+            const silentDevices = zoneDevices.filter(d => {
+                const s = statusMap.get(d.id);
+                if (!s || !s.statusData) return true;
 
-        return result;
+                const hasEssentials = s.statusData.some(
+                    sd => sd.diagnostic?.id === DiagnosticIds.FUEL_LEVEL || sd.diagnostic?.id === DiagnosticIds.STATE_OF_CHARGE
+                );
+                return !hasEssentials;
+            });
+
+            console.log(`[getVehicleDataForZone] Silent device check completed in ${Date.now() - silentCheckStart}ms:`, {
+                silentDevices: silentDevices.length,
+                percentSilent: Math.round((silentDevices.length / zoneDevices.length) * 100) + '%'
+            });
+
+            const diagStart = Date.now();
+            const silentDiagnostics = await this.fetchVehicleDiagnostics(silentDevices);
+            console.log(`[getVehicleDataForZone] Diagnostics fetched in ${Date.now() - diagStart}ms`);
+
+            // STEP 4: Merge and return
+            const mergeStart = Date.now();
+            const result = this.mergeData(zoneDevices, zoneStatuses, drivers, faults, silentDiagnostics);
+            console.log(`[getVehicleDataForZone] Merge completed in ${Date.now() - mergeStart}ms, ${result.length} vehicles`);
+
+            // VIN Decoding - await to prevent race condition
+            const vinStart = Date.now();
+            await this.enrichVehicleMetadata(result);
+            console.log(`[getVehicleDataForZone] VIN enrichment completed in ${Date.now() - vinStart}ms`);
+
+            console.log(`[getVehicleDataForZone] TOTAL TIME: ${Date.now() - startTime}ms`);
+            return result;
+        } catch (error) {
+            console.error(`[getVehicleDataForZone] ERROR after ${Date.now() - startTime}ms:`, error);
+            throw error;
+        }
     }
 
     /**

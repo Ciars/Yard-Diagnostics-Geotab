@@ -36,12 +36,23 @@ export class ProductionApiAdapter implements IGeotabApi {
      * Execute a single API call (promisified)
      */
     async call<T>(method: string, params: Record<string, unknown>): Promise<T> {
+        const startTime = Date.now();
+        const typeName = params.typeName || 'unknown';
+
         return new Promise((resolve, reject) => {
             this.api.call<T>(
                 method,
                 params,
-                (result) => resolve(result),
-                (error) => reject(this.normalizeError(error))
+                (result) => {
+                    const duration = Date.now() - startTime;
+                    console.log(`[ProductionAPI] ${method}(${typeName}) completed in ${duration}ms`);
+                    resolve(result);
+                },
+                (error) => {
+                    const duration = Date.now() - startTime;
+                    console.error(`[ProductionAPI] ${method}(${typeName}) FAILED after ${duration}ms:`, error);
+                    reject(this.normalizeError(error));
+                }
             );
         });
     }
