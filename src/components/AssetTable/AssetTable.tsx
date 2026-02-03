@@ -24,19 +24,20 @@ import './AssetTable.css';
 interface AssetTableProps {
     vehicles: VehicleData[];
     isLoading?: boolean;
+    isEnriching?: boolean;
 }
 
 // Helper to adapt v2 props (spread) to what AssetRow expects (data prop)
 // Moved OUTSIDE to prevent unmounting/remounting on every render
-const Row = ({ index, style, vehicles, toggleExpanded }: any) => (
+const Row = ({ index, style, vehicles, toggleExpanded, isEnriching }: any) => (
     <AssetRow
-        data={{ vehicles, toggleExpanded }}
+        data={{ vehicles, toggleExpanded, isEnriching }}
         index={index}
         style={style}
     />
 );
 
-export function AssetTable({ vehicles, isLoading }: AssetTableProps) {
+export function AssetTable({ vehicles, isLoading, isEnriching }: AssetTableProps) {
     const listRef = useRef<any>(null);
     const expandedVehicleId = useFleetStore(selectExpandedVehicleId);
     const setExpandedVehicle = useFleetStore((s) => s.setExpandedVehicle);
@@ -54,8 +55,9 @@ export function AssetTable({ vehicles, isLoading }: AssetTableProps) {
     // Item data passed to rows
     const itemData = useMemo(() => ({
         vehicles: sortedVehicles,
-        toggleExpanded
-    }), [sortedVehicles, expandedVehicleId]);
+        toggleExpanded,
+        isEnriching
+    }), [sortedVehicles, expandedVehicleId, isEnriching]);
 
     // Dynamic row height
     const getItemSize = (index: number) => {

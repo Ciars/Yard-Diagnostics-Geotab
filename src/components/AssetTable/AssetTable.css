@@ -306,3 +306,23 @@
         background-position: -200% 0;
     }
 }
+
+/* Enrichment Loading State */
+.enrichment-loader {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    height: 16px;
+    background: #f1f5f9;
+    border-radius: 4px;
+    overflow: hidden;
+}
+
+.enrichment-pulse {
+    width: 100%;
+    height: 100%;
+    background: linear-gradient(90deg, #f1f5f9 25%, #e2e8f0 50%, #f1f5f9 75%);
+    background-size: 200% 100%;
+    animation: skeleton-shimmer 1.5s infinite linear;
+}

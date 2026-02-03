@@ -23,7 +23,7 @@ export function Dashboard() {
     const [exporting, setExporting] = useState(false);
 
     // Fetch vehicles for selected zone
-    const { vehicles, kpis, isLoading, dataUpdatedAt } = useVehiclesInZone(selectedZone);
+    const { vehicles, kpis, isLoading, dataUpdatedAt, isEnriching } = useVehiclesInZone(selectedZone);
 
     useEffect(() => {
         if (dataUpdatedAt) {
@@ -106,7 +106,11 @@ export function Dashboard() {
 
                             {/* Asset Table */}
                             <section className="dashboard__table-section">
-                                <AssetTable vehicles={vehicles} isLoading={isLoading} />
+                                <AssetTable
+                                    vehicles={vehicles}
+                                    isLoading={isLoading}
+                                    isEnriching={isEnriching}
+                                />
                             </section>
                         </>
                     )}

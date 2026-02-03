@@ -8,6 +8,7 @@ interface AssetRowProps {
     data: {
         vehicles: VehicleData[];
         toggleExpanded: (id: string) => void;
+        isEnriching?: boolean;
     };
     index: number;
     style: React.CSSProperties;
@@ -82,9 +83,13 @@ export const AssetRow = memo(({ data, index, style }: AssetRowProps) => {
                                 <div className="level-bar" style={{ backgroundColor: getLevelColor(Math.min(100, vehicle.fuelLevel)), height: `${Math.min(100, vehicle.fuelLevel)}%` }} />
                             </div>
                         </>
+                    ) : (data.isEnriching ? (
+                        <div className="enrichment-loader">
+                            <div className="enrichment-pulse" />
+                        </div>
                     ) : (
                         <span className="level-text level-text--empty">--</span>
-                    )}
+                    ))}
                 </div>
                 <div className="asset-table__cell col-soc">
                     {vehicle.stateOfCharge !== undefined ? (
@@ -97,9 +102,13 @@ export const AssetRow = memo(({ data, index, style }: AssetRowProps) => {
                                 <div className="level-bar" style={{ backgroundColor: getLevelColor(vehicle.stateOfCharge), height: `${vehicle.stateOfCharge}%` }} />
                             </div>
                         </>
+                    ) : (data.isEnriching ? (
+                        <div className="enrichment-loader">
+                            <div className="enrichment-pulse" />
+                        </div>
                     ) : (
                         <span className="level-text level-text--empty">--</span>
-                    )}
+                    ))}
                 </div>
                 <div className="asset-table__cell col-icons">
                     <Wifi size={16} className={vehicle.status.isDeviceCommunicating ? 'icon--success' : 'icon--danger'} />
