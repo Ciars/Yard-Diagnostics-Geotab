@@ -809,9 +809,9 @@ export class FleetDataService {
 
         const startTime = Date.now();
         try {
-            console.log(`[enrichVehicleData] Starting optimized enrichment for ${vehicles.length} vehicles...`);
+            console.log(`[enrichVehicleData] Starting sequential enrichment for ${vehicles.length} vehicles...`);
 
-            // 1. Gather all unique IDs to minimize calls
+            // 1. Gather all unique IDs
             const deviceIds = vehicles.map(v => v.device.id);
             const driverIds = Array.from(new Set(
                 vehicles.map(v => v.status.driver?.id).filter(Boolean)
@@ -820,7 +820,7 @@ export class FleetDataService {
             // 2. Build targeted multiCall pool
             const enrichCalls: any[] = [];
 
-            // A. SOC and Fuel Diagnostics (2 calls per device)
+            // A. SOC and Fuel Diagnostics
             const telemetryDiagIds = [DiagnosticIds.FUEL_LEVEL, DiagnosticIds.STATE_OF_CHARGE];
             vehicles.forEach(v => {
                 telemetryDiagIds.forEach(diagId => {
@@ -866,54 +866,64 @@ export class FleetDataService {
                 });
             });
 
-            console.log(`[enrichVehicleData] Total targeted calls to execute: ${enrichCalls.length}`);
+            console.log(`[enrichVehicleData] Queueing ${enrichCalls.length} targeted calls in sequential batches...`);
 
-            // 3. Execute in parallel batches
-            const BATCH_SIZE = 90;
-            const batchPromises: Promise<any[]>[] = [];
+            // 3. Execute SEQUENTIALLY to prevent portal timeouts
+            const BATCH_SIZE = 80;
+            const flatResults: any[] = [];
+
             for (let i = 0; i < enrichCalls.length; i += BATCH_SIZE) {
                 const chunk = enrichCalls.slice(i, i + BATCH_SIZE);
-                batchPromises.push(this.api.multiCall<any[]>(chunk));
+                try {
+                    console.log(`[enrichVehicleData] Executing batch ${Math.floor(i / BATCH_SIZE) + 1} of ${Math.ceil(enrichCalls.length / BATCH_SIZE)}...`);
+                    const batchResults = await this.api.multiCall<any[]>(chunk);
+                    flatResults.push(...batchResults.flat());
+                } catch (e) {
+                    console.warn(`[enrichVehicleData] Batch failed (will continue):`, e);
+                }
             }
-
-            const allBatchResults = await Promise.all(batchPromises);
-            const flatResults = allBatchResults.flat();
 
             // 4. Process Results into lookup maps
             const driverMap = new Map<string, string>();
             const faultMap = new Map<string, FaultData[]>();
             const diagMap = new Map<string, Map<string, number>>();
 
+            let driverCount = 0;
+            let faultCount = 0;
+            let telemetryCount = 0;
+
             flatResults.forEach((result: any) => {
                 if (!result) return;
-
-                // Handle arrays (likely FaultData results) vs single objects (likely User/StatusData)
                 const items = Array.isArray(result) ? result : [result];
-                if (items.length === 0) return;
 
                 items.forEach((item: any) => {
                     if (!item) return;
 
                     // It's a User (Driver)
-                    if (item.name && !item.device && !item.diagnostic) {
+                    if (item.name && item.id && !item.device) {
                         const name = (item.firstName && item.lastName) ? `${item.firstName} ${item.lastName}` : item.name;
                         driverMap.set(item.id, name);
+                        driverCount++;
                     }
                     // It's FaultData
                     else if (item.device && item.diagnostic && item.controller) {
                         const devId = item.device.id;
                         if (!faultMap.has(devId)) faultMap.set(devId, []);
                         faultMap.get(devId)!.push(item as FaultData);
+                        faultCount++;
                     }
                     // It's StatusData (Telemetry)
                     else if (item.device && item.diagnostic && typeof item.data === 'number') {
                         const devId = item.device.id;
-                        const diagId = typeof item.diagnostic === 'string' ? item.diagnostic : item.diagnostic.id;
+                        const diagId = typeof item.diagnostic === 'string' ? item.diagnostic : (item.diagnostic as any).id;
                         if (!diagMap.has(devId)) diagMap.set(devId, new Map());
                         diagMap.get(devId)!.set(diagId, item.data);
+                        telemetryCount++;
                     }
                 });
             });
+
+            console.log(`[enrichVehicleData] Processed ${telemetryCount} status data, ${driverCount} drivers, ${faultCount} faults`);
 
             // 5. Build enriched vehicle list
             const enrichedVehicles = vehicles.map(v => {
@@ -939,7 +949,7 @@ export class FleetDataService {
                 };
             });
 
-            console.log(`[enrichVehicleData] Enrichment complete in ${Date.now() - startTime}ms`);
+            console.log(`[enrichVehicleData] ENRICHMENT COMPLETE in ${Date.now() - startTime}ms`);
             return enrichedVehicles;
         } catch (error) {
             console.warn(`[enrichVehicleData] Enrichment failed after ${Date.now() - startTime}ms:`, error);
