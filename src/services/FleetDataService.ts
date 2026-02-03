@@ -829,9 +829,9 @@ export class FleetDataService {
                             typeName: 'StatusData',
                             search: {
                                 deviceSearch: { id: v.device.id },
-                                diagnosticSearch: { id: diagId },
-                                resultsLimit: 1
-                            }
+                                diagnosticSearch: { id: diagId }
+                            },
+                            resultsLimit: 1
                         }
                     });
                 });
@@ -849,7 +849,7 @@ export class FleetDataService {
             console.log(`[enrichVehicleData] Queueing ${enrichCalls.length} targeted calls (Telemetry + Drivers)...`);
 
             // 3. Execute SEQUENTIALLY to prevent portal timeouts
-            const BATCH_SIZE = 80;
+            const BATCH_SIZE = 40;
             const flatResults: any[] = [];
 
             for (let i = 0; i < enrichCalls.length; i += BATCH_SIZE) {
