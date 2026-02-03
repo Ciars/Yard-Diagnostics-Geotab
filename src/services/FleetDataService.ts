@@ -809,99 +809,88 @@ export class FleetDataService {
 
         const startTime = Date.now();
         try {
-            console.log(`[enrichVehicleData] Starting targeted enrichment for ${vehicles.length} vehicles...`);
+            console.log(`[enrichVehicleData] Starting optimized enrichment for ${vehicles.length} vehicles...`);
 
             // 1. Gather unique Driver IDs for targeted fetch
             const driverIds = Array.from(new Set(
                 vehicles.map(v => v.status.driver?.id).filter(Boolean)
             )) as string[];
 
-            // 2. Build multiCall pool
-            const enrichCalls: any[] = [];
+            // 2. Define our "Target List" of diagnostics (Standard + Fallbacks)
+            const targetedDiagnostics = [
+                { id: DiagnosticIds.FUEL_LEVEL },
+                { id: 'DiagnosticFuelLevelPercentageId' },
+                { id: 'DiagnosticFuelLevelIdPercentage' },
+                { id: 'DiagnosticFuelLevelId' },
+                { id: DiagnosticIds.STATE_OF_CHARGE },
+                { id: 'DiagnosticElectricVehicleBatteryChargeId' },
+                { id: 'DiagnosticBatteryStateOfChargeId' },
+                { id: 'DiagnosticHVBatterySocId' },
+                { id: DiagnosticIds.BATTERY_VOLTAGE },
+                { id: 'DiagnosticEngineBatteryVoltageId' },
+                { id: 'DiagnosticMainBatteryVoltageId' }
+            ];
 
-            // A. Targeted Telemetry - Resilient Discovery
-            // We fetch the latest 10 points per device to scan for various telemetry types locally.
-            vehicles.forEach(v => {
-                enrichCalls.push({
-                    method: 'Get',
-                    params: {
-                        typeName: 'StatusData',
-                        search: { deviceSearch: { id: v.device.id } },
-                        resultsLimit: 10
-                    }
-                });
-            });
+            // 3. Fetch Telemetry via GetLatestStatusData (Optimized Geotab Method)
+            const diagMap = new Map<string, Map<string, number>>();
+            let telemetryCount = 0;
 
-            // B. Targeted Driver Name Fetch
-            driverIds.forEach(id => {
-                enrichCalls.push({
-                    method: 'Get',
-                    params: { typeName: 'User', search: { id }, resultsLimit: 1 }
-                });
-            });
+            const VEHICLE_BATCH_SIZE = 50;
+            for (let i = 0; i < vehicles.length; i += VEHICLE_BATCH_SIZE) {
+                const vehicleChunk = vehicles.slice(i, i + VEHICLE_BATCH_SIZE);
+                const deviceRefs = vehicleChunk.map(v => ({ id: v.device.id }));
 
-            // NOTE: FaultData remains DISABLED to prevent performance crashes.
-            console.log(`[enrichVehicleData] Queueing ${enrichCalls.length} calls (Conservative Batching)...`);
-
-            // 3. Execute SEQUENTIALLY to prevent portal timeouts
-            const BATCH_SIZE = 15; // Set to very low for maximum portal compatibility
-            const flatResults: any[] = [];
-
-            for (let i = 0; i < enrichCalls.length; i += BATCH_SIZE) {
-                const chunk = enrichCalls.slice(i, i + BATCH_SIZE);
                 try {
-                    const batchResults = await this.api.multiCall<any[]>(chunk);
-                    flatResults.push(...batchResults.flat());
+                    const latestData = await this.api.call<StatusData[]>('GetLatestStatusData', {
+                        devices: deviceRefs,
+                        diagnostics: targetedDiagnostics
+                    });
+
+                    if (latestData && Array.isArray(latestData)) {
+                        latestData.forEach(item => {
+                            const devId = (item.device?.id || item.device) as string;
+                            const diagId = (typeof item.diagnostic === 'string' ? item.diagnostic : item.diagnostic?.id) as string;
+
+                            if (devId && diagId && typeof item.data === 'number') {
+                                if (!diagMap.has(devId)) diagMap.set(devId, new Map());
+                                diagMap.get(devId)!.set(diagId as string, item.data);
+                                telemetryCount++;
+                            }
+                        });
+                    }
                 } catch (e) {
-                    console.warn(`[enrichVehicleData] Batch failed:`, e);
+                    console.warn(`[enrichVehicleData] GetLatestStatusData failed batch at ${i}:`, e);
                 }
             }
 
-            // 4. Process Results
+            // 4. Driver Names (Small multiCall)
             const driverMap = new Map<string, string>();
-            const diagMap = new Map<string, Map<string, number>>();
+            if (driverIds.length > 0) {
+                const driverCalls = driverIds.map(id => ({
+                    method: 'Get',
+                    params: { typeName: 'User', search: { id }, resultsLimit: 1 }
+                }));
 
-            let driverCount = 0;
-            let telemetryCount = 0;
-
-            flatResults.forEach((item: any) => {
-                if (!item || typeof item !== 'object') return;
-
-                // 1. Driver/User Identification
-                if (item.name && item.id && !item.device && !item.diagnostic) {
-                    const name = (item.firstName && item.lastName) ? `${item.firstName} ${item.lastName}` : item.name;
-                    driverMap.set(item.id, name);
-                    driverCount++;
-                }
-                // 2. StatusData (Telemetry) Identification
-                else if ('data' in item && 'diagnostic' in item) {
-                    const devId = item.device?.id || item.device;
-                    const diagId = typeof item.diagnostic === 'string' ? item.diagnostic : (item.diagnostic?.id || item.diagnostic);
-
-                    if (devId && diagId && typeof item.data === 'number') {
-                        // DISCOVERY LOG: Log IDs to help identify Fuel/SOC
-                        if (telemetryCount < 100) {
-                            console.log(`[Discover-Telemetry] dev=${devId} diag=${diagId} val=${item.data}`);
+                try {
+                    const driverResults = await this.api.multiCall<any[]>(driverCalls);
+                    driverResults.flat().forEach(user => {
+                        if (user && user.id) {
+                            const name = (user.firstName && user.lastName) ? `${user.firstName} ${user.lastName}` : (user.name || 'Unknown User');
+                            driverMap.set(user.id, name);
                         }
-
-                        if (!diagMap.has(devId)) diagMap.set(devId, new Map());
-
-                        if (!diagMap.get(devId)!.has(diagId)) {
-                            diagMap.get(devId)!.set(diagId, item.data);
-                            telemetryCount++;
-                        }
-                    }
+                    });
+                } catch (e) {
+                    console.log('[enrichVehicleData] Driver fetch partial failure');
                 }
-            });
+            }
 
-            console.log(`[enrichVehicleData] IDENTIFIED: ${telemetryCount} status points, ${driverCount} drivers`);
+            console.log(`[enrichVehicleData] IDENTIFIED: ${telemetryCount} status points, ${driverMap.size} drivers`);
 
-            // 5. Build enriched list
-            const enrichedVehicles = vehicles.map(v => {
-                const deviceId = v.device.id;
-                const dMap = diagMap.get(deviceId);
+            // 5. Build Final Vehicle List
+            return vehicles.map(v => {
+                const dMap = diagMap.get(v.device.id);
 
-                // Aggressive Fallback Mapping
+                // Aggressive Mapping (Standard -> Fallback)
                 const fuel = dMap?.get(DiagnosticIds.FUEL_LEVEL) ??
                     dMap?.get('DiagnosticFuelLevelPercentageId') ??
                     dMap?.get('DiagnosticFuelLevelIdPercentage') ??
@@ -916,22 +905,20 @@ export class FleetDataService {
                     dMap?.get('DiagnosticEngineBatteryVoltageId') ??
                     dMap?.get('DiagnosticMainBatteryVoltageId');
 
-                const dName = (v.status.driver && driverMap.get(v.status.driver.id)) || v.driverName || 'No Driver';
-
                 return {
                     ...v,
                     fuelLevel: fuel !== undefined ? fuel : v.fuelLevel,
                     stateOfCharge: soc !== undefined ? soc : v.stateOfCharge,
                     batteryVoltage: volt !== undefined ? volt : v.batteryVoltage,
-                    driverName: dName
+                    driverName: (v.status.driver && driverMap.get(v.status.driver.id)) || v.driverName || 'No Driver'
                 };
             });
 
-            console.log(`[enrichVehicleData] ENRICHMENT COMPLETE in ${Date.now() - startTime}ms`);
-            return enrichedVehicles;
         } catch (error) {
-            console.warn(`[enrichVehicleData] Fatal enrichment error:`, error);
+            console.error('[enrichVehicleData] Optimization failed, returning original list:', error);
             return vehicles;
+        } finally {
+            console.log(`[enrichVehicleData] Optimization cycle completed in ${Date.now() - startTime}ms`);
         }
     }
 }
