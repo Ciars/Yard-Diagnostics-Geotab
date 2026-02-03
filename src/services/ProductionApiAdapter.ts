@@ -39,8 +39,8 @@ export class ProductionApiAdapter implements IGeotabApi {
         const startTime = Date.now();
         const typeName = (params.typeName as string) || 'unknown';
 
-        // DEBUG: Log exact payload
-        console.log(`[ProductionAPI] SENDING call: ${method}`, JSON.stringify(params));
+        // DEBUG: Log exact payload - REMOVED for Production release
+        // console.log(`[ProductionAPI] SENDING call: ${method}`, JSON.stringify(params));
 
         return new Promise((resolve, reject) => {
             this.api.call<T>(
