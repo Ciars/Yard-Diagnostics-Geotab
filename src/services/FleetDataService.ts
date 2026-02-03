@@ -899,31 +899,33 @@ export class FleetDataService {
                 items.forEach((item: any) => {
                     if (!item) return;
 
-                    // It's a User (Driver)
-                    if (item.name && item.id && !item.device) {
+                    // 1. Identification: User/Driver
+                    if (item.name && item.id && !item.device && !item.diagnostic) {
                         const name = (item.firstName && item.lastName) ? `${item.firstName} ${item.lastName}` : item.name;
                         driverMap.set(item.id, name);
                         driverCount++;
                     }
-                    // It's FaultData
-                    else if (item.device && item.diagnostic && item.controller) {
-                        const devId = item.device.id;
-                        if (!faultMap.has(devId)) faultMap.set(devId, []);
-                        faultMap.get(devId)!.push(item as FaultData);
-                        faultCount++;
-                    }
-                    // It's StatusData (Telemetry)
-                    else if (item.device && item.diagnostic && typeof item.data === 'number') {
-                        const devId = item.device.id;
+                    // 2. Identification: StatusData (Telemetry)
+                    else if (typeof item.data === 'number' && item.diagnostic) {
+                        const devId = (item.device as any).id || item.device;
                         const diagId = typeof item.diagnostic === 'string' ? item.diagnostic : (item.diagnostic as any).id;
                         if (!diagMap.has(devId)) diagMap.set(devId, new Map());
                         diagMap.get(devId)!.set(diagId, item.data);
                         telemetryCount++;
                     }
+                    // 3. Identification: FaultData
+                    else if (item.diagnostic && (item.failureMode || item.faultState)) {
+                        const devId = (item.device as any).id || item.device;
+                        if (devId) {
+                            if (!faultMap.has(devId)) faultMap.set(devId, []);
+                            faultMap.get(devId)!.push(item as FaultData);
+                            faultCount++;
+                        }
+                    }
                 });
             });
 
-            console.log(`[enrichVehicleData] Processed ${telemetryCount} status data, ${driverCount} drivers, ${faultCount} faults`);
+            console.log(`[enrichVehicleData] Identified: ${telemetryCount} status data, ${driverCount} drivers, ${faultCount} faults`);
 
             // 5. Build enriched vehicle list
             const enrichedVehicles = vehicles.map(v => {
