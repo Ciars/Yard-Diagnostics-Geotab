@@ -831,13 +831,8 @@ export class FleetDataService {
                 // Only use KNOWN VALID diagnostic IDs to prevent GenericException
                 const safeDiagnostics = [
                     { id: DiagnosticIds.FUEL_LEVEL },
-                    { id: 'DiagnosticFuelLevelPercentageId' },
-                    { id: 'DiagnosticFuelLevelId' }, // Liters
                     { id: DiagnosticIds.STATE_OF_CHARGE },
-                    { id: 'DiagnosticElectricVehicleBatteryChargeId' },
-                    { id: 'DiagnosticHVBatterySocId' },
-                    { id: DiagnosticIds.BATTERY_VOLTAGE },
-                    { id: 'DiagnosticEngineBatteryVoltageId' }
+                    { id: DiagnosticIds.BATTERY_VOLTAGE }
                 ];
 
                 safeDiagnostics.forEach(diag => {
