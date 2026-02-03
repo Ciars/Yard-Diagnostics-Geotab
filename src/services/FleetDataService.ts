@@ -831,35 +831,58 @@ export class FleetDataService {
                 { id: 'DiagnosticMainBatteryVoltageId' }
             ];
 
-            // 3. Fetch Telemetry via GetLatestStatusData (Optimized Geotab Method)
+
+            // 3. Batched Telemetry Fetch (Standard API - Optimized)
+            // We reverted to standard 'Get' because 'GetLatestStatusData' is not available.
+            // To prevent GenericException, we use strict `resultsLimit: 1` and small batches.
+
+            const VEHICLE_BATCH_SIZE = 15; // Conservative batch size
             const diagMap = new Map<string, Map<string, number>>();
             let telemetryCount = 0;
 
-            const VEHICLE_BATCH_SIZE = 50;
             for (let i = 0; i < vehicles.length; i += VEHICLE_BATCH_SIZE) {
                 const vehicleChunk = vehicles.slice(i, i + VEHICLE_BATCH_SIZE);
-                const deviceRefs = vehicleChunk.map(v => ({ id: v.device.id }));
+                const batchCalls: any[] = [];
 
-                try {
-                    const latestData = await this.api.call<StatusData[]>('GetLatestStatusData', {
-                        devices: deviceRefs,
-                        diagnostics: targetedDiagnostics
-                    });
-
-                    if (latestData && Array.isArray(latestData)) {
-                        latestData.forEach(item => {
-                            const devId = (item.device?.id || item.device) as string;
-                            const diagId = (typeof item.diagnostic === 'string' ? item.diagnostic : item.diagnostic?.id) as string;
-
-                            if (devId && diagId && typeof item.data === 'number') {
-                                if (!diagMap.has(devId)) diagMap.set(devId, new Map());
-                                diagMap.get(devId)!.set(diagId as string, item.data);
-                                telemetryCount++;
+                // For each vehicle in this small batch, queue queries for ALL target diagnostics
+                vehicleChunk.forEach(v => {
+                    targetedDiagnostics.forEach(diag => {
+                        batchCalls.push({
+                            method: 'Get',
+                            params: {
+                                typeName: 'StatusData',
+                                search: {
+                                    deviceSearch: { id: v.device.id },
+                                    diagnosticSearch: { id: diag.id }
+                                },
+                                resultsLimit: 1 // CRITICAL: Fetch only the single latest point
                             }
                         });
-                    }
+                    });
+                });
+
+                try {
+                    // unexpected large batch? No, it's 15 * 11 ≈ 165 calls per multicall. 
+                    // This is safe for Geotab.
+                    const batchResults = await this.api.multiCall<any[]>(batchCalls);
+                    const flatResults = batchResults.flat();
+
+                    flatResults.forEach((item: any) => {
+                        if (!item || typeof item !== 'object') return;
+
+                        const devId = (item.device?.id || item.device) as string;
+                        const diagId = (typeof item.diagnostic === 'string' ? item.diagnostic : item.diagnostic?.id) as string;
+
+                        if (devId && diagId && typeof item.data === 'number') {
+                            if (!diagMap.has(devId)) diagMap.set(devId, new Map());
+                            // Since we limited to 1, this IS the latest.
+                            diagMap.get(devId)!.set(diagId, item.data);
+                            telemetryCount++;
+                        }
+                    });
+
                 } catch (e) {
-                    console.warn(`[enrichVehicleData] GetLatestStatusData failed batch at ${i}:`, e);
+                    console.warn(`[enrichVehicleData] Batch failed at index ${i}:`, e);
                 }
             }
 
