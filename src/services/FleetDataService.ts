@@ -810,7 +810,7 @@ export class FleetDataService {
         try {
             console.log(`[enrichVehicleData] Starting enrichment for ${vehicles.length} vehicles...`);
 
-            // Fetch Drivers and Faults in parallel
+            // 1. Fetch Drivers and Faults in parallel
             const [drivers, faults] = await Promise.all([
                 this.api.call<User[]>('Get', {
                     typeName: 'User',
@@ -824,6 +824,39 @@ export class FleetDataService {
                 })
             ]);
 
+            // 2. Fetch SOC and Fuel via batched multiCall (to avoid GenericException)
+            const diagIds = [DiagnosticIds.FUEL_LEVEL, DiagnosticIds.STATE_OF_CHARGE];
+            const enrichCalls: any[] = [];
+            vehicles.forEach(v => {
+                diagIds.forEach(id => {
+                    enrichCalls.push({
+                        method: 'Get',
+                        params: {
+                            typeName: 'StatusData',
+                            search: {
+                                deviceSearch: { id: v.device.id },
+                                diagnosticSearch: { id },
+                                resultsLimit: 1
+                            }
+                        }
+                    });
+                });
+            });
+
+            const allDiagResults: StatusData[] = [];
+            const BATCH_SIZE = 90;
+
+            for (let i = 0; i < enrichCalls.length; i += BATCH_SIZE) {
+                const chunk = enrichCalls.slice(i, i + BATCH_SIZE);
+                try {
+                    const batchResults = await this.api.multiCall<any[]>(chunk);
+                    const validResults = batchResults.flat().filter((r: any) => r && r.device);
+                    allDiagResults.push(...validResults);
+                } catch (e) {
+                    console.warn(`[enrichVehicleData] Batch diagnostic fetch failed:`, e);
+                }
+            }
+
             // Create Maps for fast lookup
             const driverMap = new Map<string, string>();
             drivers.forEach(d => {
@@ -831,7 +864,6 @@ export class FleetDataService {
                 driverMap.set(d.id, name);
             });
 
-            // Map faults to devices
             const faultMap = new Map<string, FaultData[]>();
             faults.forEach(f => {
                 const devId = f.device.id;
@@ -839,11 +871,21 @@ export class FleetDataService {
                 faultMap.get(devId)!.push(f);
             });
 
-            // Update vehicles IN PLACE (by reference) for reactivity if needed, 
-            // but return updated array for hook to trigger state change safely.
+            const diagMap = new Map<string, Map<string, number>>();
+            allDiagResults.forEach(r => {
+                const devId = r.device.id;
+                const diagId = typeof r.diagnostic === 'string' ? r.diagnostic : r.diagnostic.id;
+                if (!diagMap.has(devId)) diagMap.set(devId, new Map());
+                diagMap.get(devId)!.set(diagId, r.data);
+            });
+
+            // Update vehicles
             const enrichedVehicles = vehicles.map(v => {
                 const deviceId = v.device.id;
                 const vFaults = faultMap.get(deviceId) || [];
+
+                const fuelLevel = diagMap.get(deviceId)?.get(DiagnosticIds.FUEL_LEVEL);
+                const soc = diagMap.get(deviceId)?.get(DiagnosticIds.STATE_OF_CHARGE);
 
                 // Recalculate KPI flags based on new fault data
                 const hasCriticalFaults = vFaults.some(f =>
@@ -855,15 +897,17 @@ export class FleetDataService {
                     ...v,
                     activeFaults: vFaults,
                     hasCriticalFaults,
+                    fuelLevel: fuelLevel ?? v.fuelLevel,
+                    stateOfCharge: soc ?? v.stateOfCharge,
                     driverName: (v.status.driver && driverMap.get(v.status.driver.id)) || 'No Driver'
                 };
             });
 
-            console.log(`[enrichVehicleData] Enrichment complete`);
+            console.log(`[enrichVehicleData] Enrichment complete (including SOC/Fuel)`);
             return enrichedVehicles;
         } catch (error) {
             console.warn(`[enrichVehicleData] Enrichment failed (non-critical):`, error);
-            return vehicles; // Return original if fails
+            return vehicles;
         }
     }
 }
