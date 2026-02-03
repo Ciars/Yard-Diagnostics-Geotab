@@ -817,33 +817,32 @@ export class FleetDataService {
             )) as string[];
             console.log(`[enrichVehicleData] Found ${driverIds.length} drivers to fetch`);
 
-
-            // 3. Parallel Single-Vehicle Telemetry Fetch (Ultra-Resilient)
-            // We fetch each vehicle's data individually (in parallel) to avoid "Massive MultiCall" server errors.
-            // Concurrency Limit: 5 simultaneous HTTP requests.
-
             // 3. Pure Parallel Single-Call Strategy (Definitive Fix)
-            // Research Probe confirmed that `multiCall` fails on this server, but `api.call` works.
-            // We now execute individual HTTP requests for each diagnostic parameter.
-
-            const CONCURRENCY_LIMIT = 4; // Simultaneous vehicles being processed
+            const CONCURRENCY_LIMIT = 4;
             const diagMap = new Map<string, Map<string, number>>();
-            let telemetryCount = 0;
+            const faultMap = new Map<string, FaultData[]>();
 
-            console.log(`[enrichVehicleData] Starting telemetry loop. Concurrency: ${CONCURRENCY_LIMIT}`);
+            console.log(`[enrichVehicleData] Starting telemetry/fault loop. Concurrency: ${CONCURRENCY_LIMIT}`);
 
             const processVehicle = async (v: VehicleData) => {
-                // console.log(`[enrichVehicleData] Processing vehicle ${v.device.id}`); // Uncomment for extreme verbosity
                 // Standard Diagnostic IDs only (Sanitized)
                 const safeDiagnostics = [
+                    // Core Vitals
                     { id: DiagnosticIds.FUEL_LEVEL },
                     { id: DiagnosticIds.STATE_OF_CHARGE },
-                    { id: DiagnosticIds.BATTERY_VOLTAGE }
+                    { id: DiagnosticIds.BATTERY_VOLTAGE },
+                    { id: DiagnosticIds.CHARGING_STATE },
+                    // Camera Health
+                    { id: DiagnosticIds.CAMERA_ONLINE },
+                    { id: DiagnosticIds.VIDEO_DEVICE_HEALTH },
+                    { id: DiagnosticIds.CAMERA_STATUS_ROAD },
+                    // { id: "DiagnosticSurfsightStatusId" } // Optional, add if needed
                 ];
 
-                // Execute independent calls for this vehicle in parallel
-                // This bypasses the broken "multiCall" wrapper entirely.
-                const promises = safeDiagnostics.map(diag =>
+                const promises: Promise<any>[] = [];
+
+                // A. Diagnostics (Parallel Single Calls)
+                const diagPromises = safeDiagnostics.map(diag =>
                     this.api.call<any[]>('Get', {
                         typeName: 'StatusData',
                         search: {
@@ -851,20 +850,36 @@ export class FleetDataService {
                             diagnosticSearch: { id: diag.id }
                         },
                         resultsLimit: 1
-                    }).then(results => ({ diagId: diag.id, results }))
-                        .catch(e => ({ diagId: diag.id, error: e }))
+                    }).then(results => ({ type: 'diag', diagId: diag.id, results }))
+                        .catch(e => ({ type: 'diag', diagId: diag.id, error: e }))
                 );
+                promises.push(...diagPromises);
+
+                // B. Faults (Single Call)
+                // Fetch last 24 hours of faults
+                const faultPromise = this.api.call<FaultData[]>('Get', {
+                    typeName: 'FaultData',
+                    search: {
+                        deviceSearch: { id: v.device.id },
+                        fromDate: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
+                    },
+                    resultsLimit: 50 // Cap to prevent massive payloads
+                }).then(results => ({ type: 'fault', results }))
+                    .catch(e => ({ type: 'fault', error: e, results: [] }));
+
+                promises.push(faultPromise);
 
                 const results = await Promise.all(promises);
 
                 results.forEach((res: any) => {
-                    if (res.results && res.results.length > 0) {
+                    if (res.type === 'diag' && res.results && res.results.length > 0) {
                         const item = res.results[0]; // resultsLimit: 1
                         if (typeof item.data === 'number') {
                             if (!diagMap.has(v.device.id)) diagMap.set(v.device.id, new Map());
                             diagMap.get(v.device.id)!.set(res.diagId, item.data);
-                            telemetryCount++;
                         }
+                    } else if (res.type === 'fault' && res.results && res.results.length > 0) {
+                        faultMap.set(v.device.id, res.results);
                     }
                 });
             };
@@ -875,32 +890,43 @@ export class FleetDataService {
                 await Promise.all(chunk.map(v => processVehicle(v)));
             }
 
-            // 4. Driver Names (Small multiCall)
+            // 4. Driver Names (Parallel Single Calls)
+            // Replaced multiCall with parallel api.call
             const driverMap = new Map<string, string>();
             if (driverIds.length > 0) {
-                const driverCalls = driverIds.map(id => ({
-                    method: 'Get',
-                    params: { typeName: 'User', search: { id }, resultsLimit: 1 }
-                }));
+                console.log(`[enrichVehicleData] Fetching ${driverIds.length} drivers...`);
 
-                try {
-                    const driverResults = await this.api.multiCall<any[]>(driverCalls);
-                    driverResults.flat().forEach(user => {
-                        if (user && user.id) {
+                // Concurrency for drivers (can be higher, requests are light)
+                const DRIVER_CONCURRENCY = 6;
+
+                const processDriver = async (id: string) => {
+                    return this.api.call<User[]>('Get', {
+                        typeName: 'User',
+                        search: { id },
+                        resultsLimit: 1
+                    }).then(users => {
+                        if (users && users.length > 0) {
+                            const user = users[0];
                             const name = (user.firstName && user.lastName) ? `${user.firstName} ${user.lastName}` : (user.name || 'Unknown User');
-                            driverMap.set(user.id, name);
+                            driverMap.set(id, name);
                         }
+                    }).catch(e => {
+                        console.warn(`[enrichVehicleData] Failed to fetch driver ${id}`, e);
                     });
-                } catch (e) {
-                    console.log('[enrichVehicleData] Driver fetch partial failure');
+                };
+
+                for (let i = 0; i < driverIds.length; i += DRIVER_CONCURRENCY) {
+                    const chunk = driverIds.slice(i, i + DRIVER_CONCURRENCY);
+                    await Promise.all(chunk.map(id => processDriver(id)));
                 }
             }
 
-            console.log(`[enrichVehicleData] IDENTIFIED: ${telemetryCount} status points, ${driverMap.size} drivers`);
+            console.log(`[enrichVehicleData] IDENTIFIED: ${diagMap.size} vehicles with data, ${driverMap.size} drivers, ${faultMap.size} vehicles with faults`);
 
             // 5. Build Final Vehicle List
             return vehicles.map(v => {
                 const dMap = diagMap.get(v.device.id);
+                const vehicleFaults = faultMap.get(v.device.id) || [];
 
                 // Aggressive Mapping (Standard -> Fallback)
                 const fuel = dMap?.get(DiagnosticIds.FUEL_LEVEL) ??
@@ -917,12 +943,67 @@ export class FleetDataService {
                     dMap?.get('DiagnosticEngineBatteryVoltageId') ??
                     dMap?.get('DiagnosticMainBatteryVoltageId');
 
+                // Charging Status
+                const chargingState = dMap?.get(DiagnosticIds.CHARGING_STATE);
+                const isCharging = chargingState !== undefined && chargingState > 0;
+
+                // Driver Name
+                const driverName = (v.status.driver && driverMap.get(v.status.driver.id)) || v.driverName || 'No Driver';
+
+                // Camera Health Logic
+                let camHealth = v.cameraStatus?.health;
+                let isCamOnline = v.cameraStatus?.isOnline;
+
+                // Check for new camera diagnostics
+                if (dMap) {
+                    const onlineVal = dMap.get(DiagnosticIds.CAMERA_ONLINE);
+                    const healthVal = dMap.get(DiagnosticIds.VIDEO_DEVICE_HEALTH);
+                    const roadVal = dMap.get(DiagnosticIds.CAMERA_STATUS_ROAD);
+
+                    // If we have ANY camera data, assume camera exists (if not already detected)
+                    const hasCamData = onlineVal !== undefined || healthVal !== undefined || roadVal !== undefined;
+
+                    if (hasCamData) {
+                        // Logic from mergeData adapted
+                        if (onlineVal !== undefined && onlineVal === 0) {
+                            camHealth = 'offline';
+                            isCamOnline = false;
+                        } else {
+                            // Reset to good if formerly unknown, then degrade based on faults
+                            if (!camHealth) camHealth = 'good';
+                            isCamOnline = true;
+
+                            if (healthVal === 2 || healthVal === 3) camHealth = 'critical';
+                            else if (roadVal === 0 || roadVal === 4) camHealth = 'critical';
+                            else if (healthVal === 1) camHealth = 'warning';
+                            else if (roadVal === 1 || roadVal === 3) camHealth = 'warning';
+                        }
+                    }
+                }
+
+                const updatedCameraStatus = v.cameraStatus ? {
+                    ...v.cameraStatus,
+                    health: camHealth,
+                    isOnline: isCamOnline
+                } : (dMap && (dMap.get(DiagnosticIds.CAMERA_ONLINE) !== undefined) ? { // Create if new
+                    deviceId: v.device.id,
+                    name: 'On-Board Camera',
+                    isOnline: isCamOnline ?? false,
+                    health: camHealth,
+                    lastHeartbeat: new Date().toISOString()
+                } : undefined);
+
+
                 return {
                     ...v,
                     fuelLevel: fuel !== undefined ? fuel : v.fuelLevel,
                     stateOfCharge: soc !== undefined ? soc : v.stateOfCharge,
                     batteryVoltage: volt !== undefined ? volt : v.batteryVoltage,
-                    driverName: (v.status.driver && driverMap.get(v.status.driver.id)) || v.driverName || 'No Driver'
+                    isCharging: isCharging,
+                    driverName: driverName,
+                    activeFaults: vehicleFaults,
+                    hasCriticalFaults: vehicleFaults.some(f => f.controller && f.controller.name !== 'Telematics Device'),
+                    cameraStatus: updatedCameraStatus as any
                 };
             });
 

@@ -119,7 +119,7 @@ geotab.addin.myAddin = function(api, state) {
 
 ## Rate Limits & Best Practices
 
-1. **Use MultiCall** - Batch requests to reduce API calls
+1. **AVOID MultiCall** - Use parallel `api.call` instead. Production servers often reject `multiCall` batches.
 2. **Cache static data** - Zones, Devices don't change frequently
 3. **Limit results** - Use `resultsLimit` to avoid large responses
 4. **Use fromDate/toDate** - Always scope time-series queries
