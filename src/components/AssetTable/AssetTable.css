@@ -272,21 +272,37 @@
 }
 
 /* Empty/Loading States */
-.no-data,
-.asset-table--loading {
+.no-data {
     padding: 40px;
     text-align: center;
     color: #94a3b8;
     height: 100%;
 }
 
-.skeleton-rows {
-    padding: 20px;
+.asset-table--loading {
+    display: flex;
+    flex-direction: column;
 }
 
-.skeleton--row {
-    height: 40px;
-    background: #f1f5f9;
-    margin-bottom: 12px;
+.asset-table__row--skeleton {
+    pointer-events: none;
+    border-bottom: 1px solid #f1f5f9;
+}
+
+.skeleton-box {
+    height: 16px;
+    background: linear-gradient(90deg, #f1f5f9 25%, #f8fafc 50%, #f1f5f9 75%);
+    background-size: 200% 100%;
+    animation: skeleton-shimmer 1.5s infinite linear;
     border-radius: 4px;
+}
+
+@keyframes skeleton-shimmer {
+    0% {
+        background-position: 200% 0;
+    }
+
+    100% {
+        background-position: -200% 0;
+    }
 }

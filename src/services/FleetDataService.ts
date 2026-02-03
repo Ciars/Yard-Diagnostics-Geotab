@@ -800,4 +800,70 @@ export class FleetDataService {
     }
 
 
+    /**
+     * BACKGROUND ENRICHMENT: Fetch drivers and faults for the given vehicles.
+     * This is intended to be called after the initial fast render.
+     */
+    async enrichVehicleData(vehicles: VehicleData[]): Promise<VehicleData[]> {
+        if (!vehicles.length) return vehicles;
+
+        try {
+            console.log(`[enrichVehicleData] Starting enrichment for ${vehicles.length} vehicles...`);
+
+            // Fetch Drivers and Faults in parallel
+            const [drivers, faults] = await Promise.all([
+                this.api.call<User[]>('Get', {
+                    typeName: 'User',
+                    search: { userSearch: { driverGroups: true } },
+                    resultsLimit: 50000
+                }),
+                this.api.call<FaultData[]>('Get', {
+                    typeName: 'FaultData',
+                    search: { fromDate: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString() },
+                    resultsLimit: 50000
+                })
+            ]);
+
+            // Create Maps for fast lookup
+            const driverMap = new Map<string, string>();
+            drivers.forEach(d => {
+                const name = (d.firstName && d.lastName) ? `${d.firstName} ${d.lastName}` : d.name;
+                driverMap.set(d.id, name);
+            });
+
+            // Map faults to devices
+            const faultMap = new Map<string, FaultData[]>();
+            faults.forEach(f => {
+                const devId = f.device.id;
+                if (!faultMap.has(devId)) faultMap.set(devId, []);
+                faultMap.get(devId)!.push(f);
+            });
+
+            // Update vehicles IN PLACE (by reference) for reactivity if needed, 
+            // but return updated array for hook to trigger state change safely.
+            const enrichedVehicles = vehicles.map(v => {
+                const deviceId = v.device.id;
+                const vFaults = faultMap.get(deviceId) || [];
+
+                // Recalculate KPI flags based on new fault data
+                const hasCriticalFaults = vFaults.some(f =>
+                    f.diagnostic?.id?.includes('Critical') ||
+                    f.diagnostic?.name?.includes('Critical')
+                );
+
+                return {
+                    ...v,
+                    activeFaults: vFaults,
+                    hasCriticalFaults,
+                    driverName: (v.status.driver && driverMap.get(v.status.driver.id)) || 'No Driver'
+                };
+            });
+
+            console.log(`[enrichVehicleData] Enrichment complete`);
+            return enrichedVehicles;
+        } catch (error) {
+            console.warn(`[enrichVehicleData] Enrichment failed (non-critical):`, error);
+            return vehicles; // Return original if fails
+        }
+    }
 }

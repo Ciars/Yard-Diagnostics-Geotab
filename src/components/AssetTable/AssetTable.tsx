@@ -69,8 +69,23 @@ export function AssetTable({ vehicles, isLoading }: AssetTableProps) {
     if (isLoading) {
         return (
             <div className="asset-table asset-table--loading">
-                <div className="skeleton-rows">
-                    {[1, 2, 3, 4, 5].map(i => <div key={i} className="skeleton skeleton--row" />)}
+                <AssetTableHeader
+                    sortField={sortField}
+                    sortDirection={sortDirection}
+                    onSort={handleSort}
+                />
+                <div className="asset-table__body-container">
+                    {[...Array(10)].map((_, i) => (
+                        <div key={i} className="asset-table__row asset-table__row--skeleton">
+                            <div className="asset-table__cell"><div className="skeleton-box" style={{ width: '80%' }} /></div>
+                            <div className="asset-table__cell"><div className="skeleton-box" style={{ width: '60%' }} /></div>
+                            <div className="asset-table__cell"><div className="skeleton-box" style={{ width: '70%' }} /></div>
+                            <div className="asset-table__cell"><div className="skeleton-box" style={{ width: '40%' }} /></div>
+                            <div className="asset-table__cell"><div className="skeleton-box" style={{ width: '40%' }} /></div>
+                            <div className="asset-table__cell"><div className="skeleton-box" style={{ width: '100px' }} /></div>
+                            <div className="asset-table__cell"><div className="skeleton-box" style={{ width: '50px' }} /></div>
+                        </div>
+                    ))}
                 </div>
             </div>
         );

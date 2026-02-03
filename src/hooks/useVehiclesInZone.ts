@@ -18,6 +18,7 @@ interface UseVehiclesInZoneResult {
     kpis: KpiCounts;
     isLoading: boolean;
     isFetching: boolean;
+    isEnriching: boolean;
     error: Error | null;
     refetch: () => void;
     dataUpdatedAt: number;
@@ -27,45 +28,65 @@ export function useVehiclesInZone(zone: Zone | null): UseVehiclesInZoneResult {
     const { api, isLoading: apiLoading, error: apiError } = useGeotabApi();
     const zoneId = zone?.id;
 
-    const query = useQuery({
-        // Include zone polygon hash in key to invalidate cache if zone boundaries change
+    // STAGE 1: Fast initial fetch (Basic device info + Status)
+    const fastQuery = useQuery({
         queryKey: [
             ...queryKeys.vehiclesInZone(zoneId ?? ''),
-            zone?.points?.length ?? 0 // Polygon size as simple cache key
+            'fast',
+            zone?.points?.length ?? 0
         ],
         queryFn: async () => {
             if (!api || !zone) throw new Error('API or zoneId not available');
-            // console.log(`[useVehiclesInZone] Fetching for Zone: ${zone.id}`);
             const service = new FleetDataService(api);
-            const data = await service.getVehicleDataForZone(zone.id);
-            // console.log(`[useVehiclesInZone] Received: ${data.length} vehicles`);
-            return data;
+            return service.getVehicleDataForZone(zone.id);
         },
         enabled: !!api && !!zone && !apiLoading,
+        staleTime: 30000,
         refetchInterval: POLLING_INTERVALS.STATUS_DATA,
-        refetchIntervalInBackground: false, // Pause when tab hidden
-        staleTime: 30000, // Prevent immediate refetch on re-render (breaks infinite loop)
+    });
+
+    // STAGE 2: Background enrichment (Drivers, Faults)
+    const enrichQuery = useQuery({
+        queryKey: [
+            ...queryKeys.vehiclesInZone(zoneId ?? ''),
+            'enrich'
+        ],
+        queryFn: async () => {
+            if (!api || !fastQuery.data) throw new Error('API or basic data not available');
+            const service = new FleetDataService(api);
+            return service.enrichVehicleData(fastQuery.data);
+        },
+        // Only run enrichment once we have the fast data
+        enabled: !!api && !!fastQuery.data && fastQuery.data.length > 0,
+        staleTime: 60000,
+        // Don't refetch enrichment as often as status
     });
 
     const setVehicles = useFleetStore((s) => s.setVehicles);
 
+    // Merge: Use enriched data if available, otherwise fast data
+    const vehicles = enrichQuery.data ?? fastQuery.data ?? [];
+
     // Sync to store when data changes
     useEffect(() => {
-        if (query.data) {
-            setVehicles(query.data);
+        if (vehicles.length > 0) {
+            setVehicles(vehicles);
         }
-    }, [query.data, setVehicles]);
+    }, [vehicles, setVehicles]);
 
-    const vehicles = query.data ?? [];
     const kpis = FleetDataService.calculateKpis(vehicles);
 
     return {
         vehicles,
         kpis,
-        isLoading: apiLoading || query.isLoading,
-        isFetching: query.isFetching,
-        error: apiError || query.error,
-        refetch: query.refetch,
-        dataUpdatedAt: query.dataUpdatedAt,
+        isLoading: apiLoading || fastQuery.isLoading,
+        isFetching: fastQuery.isFetching || enrichQuery.isFetching,
+        isEnriching: enrichQuery.isFetching,
+        error: apiError || fastQuery.error || (enrichQuery.error as Error),
+        refetch: () => {
+            fastQuery.refetch();
+            enrichQuery.refetch();
+        },
+        dataUpdatedAt: fastQuery.dataUpdatedAt,
     };
 }
