@@ -5,7 +5,7 @@
  * 60-second polling when zone is selected.
  */
 
-import { useEffect } from 'react';
+import { useEffect, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { queryKeys, POLLING_INTERVALS } from '@/lib/queryClient';
 import { FleetDataService } from '@/services/FleetDataService';
@@ -64,8 +64,35 @@ export function useVehiclesInZone(zone: Zone | null): UseVehiclesInZoneResult {
 
     const setVehicles = useFleetStore((s) => s.setVehicles);
 
-    // Merge: Use enriched data if available, otherwise fast data
-    const vehicles = enrichQuery.data ?? fastQuery.data ?? [];
+    // Merge: Use a robust per-vehicle merge to prevent data loss during polling/updates.
+    // fastQuery provides the latest GPS/Status.
+    // enrichQuery provides the background metadata (SOC, Fuel, Drivers, Faults).
+    const vehicles = useMemo(() => {
+        const baseVehicles = fastQuery.data ?? [];
+        const enrichedMetadata = enrichQuery.data ?? [];
+
+        if (enrichedMetadata.length === 0) return baseVehicles;
+
+        // Create a lookup map for enriched data
+        const enrichMap = new Map<string, VehicleData>();
+        enrichedMetadata.forEach(v => enrichMap.set(v.device.id, v));
+
+        // Overlay enrichment onto base GPS/Status data
+        return baseVehicles.map(v => {
+            const enriched = enrichMap.get(v.device.id);
+            if (!enriched) return v;
+
+            return {
+                ...v,
+                // These fields are enriched in Phase 3
+                fuelLevel: enriched.fuelLevel,
+                stateOfCharge: enriched.stateOfCharge,
+                driverName: enriched.driverName,
+                activeFaults: enriched.activeFaults,
+                hasCriticalFaults: enriched.hasCriticalFaults
+            };
+        });
+    }, [fastQuery.data, enrichQuery.data]);
 
     // Sync to store when data changes
     useEffect(() => {
