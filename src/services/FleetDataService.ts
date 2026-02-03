@@ -892,30 +892,49 @@ export class FleetDataService {
             let faultCount = 0;
             let telemetryCount = 0;
 
-            flatResults.forEach((result: any) => {
+            flatResults.forEach((result: any, idx) => {
                 if (!result) return;
                 const items = Array.isArray(result) ? result : [result];
 
+                // Debug Sample
+                if (idx < 5 && items.length > 0) {
+                    console.log(`[enrichVehicleData] DEBUG Sample Item (Batch Result ${idx}):`, items[0]);
+                }
+
                 items.forEach((item: any) => {
-                    if (!item) return;
+                    if (!item || typeof item !== 'object') return;
 
                     // 1. Identification: User/Driver
                     if (item.name && item.id && !item.device && !item.diagnostic) {
                         const name = (item.firstName && item.lastName) ? `${item.firstName} ${item.lastName}` : item.name;
                         driverMap.set(item.id, name);
                         driverCount++;
+                        return;
                     }
+
                     // 2. Identification: StatusData (Telemetry)
-                    else if (typeof item.data === 'number' && item.diagnostic) {
-                        const devId = (item.device as any).id || item.device;
-                        const diagId = typeof item.diagnostic === 'string' ? item.diagnostic : (item.diagnostic as any).id;
-                        if (!diagMap.has(devId)) diagMap.set(devId, new Map());
-                        diagMap.get(devId)!.set(diagId, item.data);
-                        telemetryCount++;
+                    const isStatusData = 'data' in item && 'diagnostic' in item;
+                    if (isStatusData) {
+                        const devId = item.device?.id || item.device;
+                        const diagId = typeof item.diagnostic === 'string' ? item.diagnostic : (item.diagnostic?.id || item.diagnostic);
+
+                        // Sample log
+                        if (telemetryCount === 0) {
+                            console.log('[enrichVehicleData] IDENTIFIED Telemetry Point:', { devId, diagId, data: item.data });
+                        }
+
+                        if (devId && diagId && typeof item.data === 'number') {
+                            if (!diagMap.has(devId)) diagMap.set(devId, new Map());
+                            diagMap.get(devId)!.set(diagId, item.data);
+                            telemetryCount++;
+                        }
+                        return;
                     }
+
                     // 3. Identification: FaultData
-                    else if (item.diagnostic && (item.failureMode || item.faultState)) {
-                        const devId = (item.device as any).id || item.device;
+                    const isFaultData = 'failureMode' in item || 'faultState' in item;
+                    if (isFaultData) {
+                        const devId = item.device?.id || item.device;
                         if (devId) {
                             if (!faultMap.has(devId)) faultMap.set(devId, []);
                             faultMap.get(devId)!.push(item as FaultData);
@@ -925,7 +944,7 @@ export class FleetDataService {
                 });
             });
 
-            console.log(`[enrichVehicleData] Identified: ${telemetryCount} status data, ${driverCount} drivers, ${faultCount} faults`);
+            console.log(`[enrichVehicleData] IDENTIFIED: ${telemetryCount} status data, ${driverCount} drivers, ${faultCount} faults`);
 
             // 5. Build enriched vehicle list
             const enrichedVehicles = vehicles.map(v => {
