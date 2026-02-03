@@ -23,7 +23,7 @@ const DORMANCY_THRESHOLD_DAYS = 7;     // 7 days
 // Helper to calculate bounding box for a polygon (fast pre-filter for zone checks)
 
 // Helper for 'Hours Since'
-const SILENT_THRESHOLD_HOURS = 4 * 24; // 4 days
+const SILENT_THRESHOLD_HOURS = 24; // 24 hours (Matches tests and business logic)
 const hoursSince = (isoDate: string) => {
     const ms = Date.now() - new Date(isoDate).getTime();
     return ms / (1000 * 60 * 60);
@@ -819,21 +819,19 @@ export class FleetDataService {
             // 2. Build multiCall pool
             const enrichCalls: any[] = [];
 
-            // A. Targeted SOC and Fuel (2 calls per yard vehicle)
-            const telemetryDiagIds = [DiagnosticIds.FUEL_LEVEL, DiagnosticIds.STATE_OF_CHARGE];
+            // A. Targeted Telemetry - Resilient Fetch
+            // Instead of filtering by Diagnostic ID in the query (which triggered server-side crashes),
+            // we fetch the latest 50 StatusData points per device and filter them in JS.
             vehicles.forEach(v => {
-                telemetryDiagIds.forEach(diagId => {
-                    enrichCalls.push({
-                        method: 'Get',
-                        params: {
-                            typeName: 'StatusData',
-                            search: {
-                                deviceSearch: { id: v.device.id },
-                                diagnosticSearch: { id: diagId }
-                            },
-                            resultsLimit: 1
-                        }
-                    });
+                enrichCalls.push({
+                    method: 'Get',
+                    params: {
+                        typeName: 'StatusData',
+                        search: {
+                            deviceSearch: { id: v.device.id }
+                        },
+                        resultsLimit: 50 // Fetch recent data to scan locally
+                    }
                 });
             });
 
@@ -849,7 +847,7 @@ export class FleetDataService {
             console.log(`[enrichVehicleData] Queueing ${enrichCalls.length} targeted calls (Telemetry + Drivers)...`);
 
             // 3. Execute SEQUENTIALLY to prevent portal timeouts
-            const BATCH_SIZE = 40;
+            const BATCH_SIZE = 30; // Further reduced for maximum portal resilience
             const flatResults: any[] = [];
 
             for (let i = 0; i < enrichCalls.length; i += BATCH_SIZE) {
@@ -885,8 +883,12 @@ export class FleetDataService {
 
                     if (devId && diagId && typeof item.data === 'number') {
                         if (!diagMap.has(devId)) diagMap.set(devId, new Map());
-                        diagMap.get(devId)!.set(diagId, item.data);
-                        telemetryCount++;
+
+                        // Only take the NEWEST (first encountered) point for each diagnostic
+                        if (!diagMap.get(devId)!.has(diagId)) {
+                            diagMap.get(devId)!.set(diagId, item.data);
+                            telemetryCount++;
+                        }
                     }
                 }
             });
@@ -896,8 +898,11 @@ export class FleetDataService {
             // 5. Build enriched list
             const enrichedVehicles = vehicles.map(v => {
                 const deviceId = v.device.id;
-                const fuel = diagMap.get(deviceId)?.get(DiagnosticIds.FUEL_LEVEL);
-                const soc = diagMap.get(deviceId)?.get(DiagnosticIds.STATE_OF_CHARGE);
+                const dMap = diagMap.get(deviceId);
+
+                // Flexible fuel mapping (standard vs HD)
+                const fuel = dMap?.get(DiagnosticIds.FUEL_LEVEL) ?? dMap?.get('DiagnosticFuelLevelPercentageId');
+                const soc = dMap?.get(DiagnosticIds.STATE_OF_CHARGE);
                 const dName = (v.status.driver && driverMap.get(v.status.driver.id)) || v.driverName || 'No Driver';
 
                 return {
