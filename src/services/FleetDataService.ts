@@ -835,70 +835,115 @@ export class FleetDataService {
                 console.warn('[enrichVehicleData] Bulk driver fetch failed', e);
             }
 
-            // 3. Pure Parallel Single-Call Strategy (Telemetry)
-            const CONCURRENCY_LIMIT = 4;
+            // 3. Vehicle-Scoped Micro-Batching (Scalability Fix)
+            // Instead of 8 calls per vehicle (1000+ total), we do 1 multiCall per vehicle (145 total).
+            const CONCURRENCY_LIMIT = 8; // Higher concurrency safe with fewer calls
             const diagMap = new Map<string, Map<string, number>>();
             const faultMap = new Map<string, FaultData[]>();
 
             console.log(`[enrichVehicleData] Starting telemetry/fault loop. Concurrency: ${CONCURRENCY_LIMIT}`);
 
             const processVehicle = async (v: VehicleData) => {
-                // Standard Diagnostic IDs only (Sanitized)
                 const safeDiagnostics = [
-                    // Core Vitals
                     { id: DiagnosticIds.FUEL_LEVEL },
                     { id: DiagnosticIds.STATE_OF_CHARGE },
                     { id: DiagnosticIds.BATTERY_VOLTAGE },
                     { id: DiagnosticIds.CHARGING_STATE },
-                    // Camera Health
                     { id: DiagnosticIds.CAMERA_ONLINE },
                     { id: DiagnosticIds.VIDEO_DEVICE_HEALTH },
                     { id: DiagnosticIds.CAMERA_STATUS_ROAD },
                 ];
 
-                const promises: Promise<any>[] = [];
+                // Build MultiCall Payload
+                const calls: any[] = [];
 
-                // A. Diagnostics (Parallel Single Calls)
-                const diagPromises = safeDiagnostics.map(diag =>
-                    this.api.call<any[]>('Get', {
-                        typeName: 'StatusData',
+                // A. Diagnostics
+                safeDiagnostics.forEach(diag => {
+                    calls.push({
+                        method: 'Get',
+                        params: {
+                            typeName: 'StatusData',
+                            search: {
+                                deviceSearch: { id: v.device.id },
+                                diagnosticSearch: { id: diag.id }
+                            },
+                            resultsLimit: 1
+                        }
+                    });
+                });
+
+                // B. Faults
+                calls.push({
+                    method: 'Get',
+                    params: {
+                        typeName: 'FaultData',
                         search: {
                             deviceSearch: { id: v.device.id },
-                            diagnosticSearch: { id: diag.id }
+                            fromDate: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
                         },
-                        resultsLimit: 1
-                    }).then(results => ({ type: 'diag', diagId: diag.id, results }))
-                        .catch(e => ({ type: 'diag', diagId: diag.id, error: e }))
-                );
-                promises.push(...diagPromises);
-
-                // B. Faults (Single Call)
-                // Fetch last 24 hours of faults
-                const faultPromise = this.api.call<FaultData[]>('Get', {
-                    typeName: 'FaultData',
-                    search: {
-                        deviceSearch: { id: v.device.id },
-                        fromDate: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
-                    },
-                    resultsLimit: 10
-                }).then(results => ({ type: 'fault', results }))
-                    .catch(e => ({ type: 'fault', error: e, results: [] }));
-
-                promises.push(faultPromise);
-
-                const results = await Promise.all(promises);
-
-                results.forEach((res: any) => {
-                    if (res.type === 'diag' && res.results && res.results.length > 0) {
-                        const item = res.results[0]; // resultsLimit: 1
-                        if (typeof item.data === 'number') {
-                            if (!diagMap.has(v.device.id)) diagMap.set(v.device.id, new Map());
-                            diagMap.get(v.device.id)!.set(res.diagId, item.data);
-                        }
-                    } else if (res.type === 'fault' && res.results && res.results.length > 0) {
-                        faultMap.set(v.device.id, res.results);
+                        resultsLimit: 10
                     }
                 });
+
+                try {
+                    // Execute Micro-Batch
+                    const results = await this.api.multiCall<any[]>(calls);
+
+                    // Map Results (Order Preserved: 0-6 are Diags, 7 is Faults)
+                    results.forEach((res, index) => {
+                        if (index < safeDiagnostics.length) {
+                            // Diagnostic Result
+                            // multiCall returns array of items for each call [[StatusData], [StatusData]...]
+                            const dataArray = Array.isArray(res) ? res : [res];
+                            if (dataArray.length > 0 && dataArray[0] && typeof dataArray[0].data === 'number') {
+                                if (!diagMap.has(v.device.id)) diagMap.set(v.device.id, new Map());
+                                diagMap.get(v.device.id)!.set(safeDiagnostics[index].id, dataArray[0].data);
+                            }
+                        } else {
+                            // Fault Result (Last item)
+                            const faultArray = Array.isArray(res) ? res : [];
+                            if (faultArray.length > 0) {
+                                faultMap.set(v.device.id, faultArray);
+                            }
+                        }
+                    });
+
+                } catch (batchError) {
+                    // FAILOVER: If simple multiCall fails (some servers purely hate multiCall), fall back to Single Call
+                    console.warn(`[enrichVehicleData] Micro-batch failed for ${v.device.id}, retrying singular...`);
+
+                    // ... (Previous Single Call Logic as fallback) ...
+                    const promisesPromises: Promise<any>[] = safeDiagnostics.map(diag =>
+                        this.api.call<any[]>('Get', {
+                            typeName: 'StatusData',
+                            search: { deviceSearch: { id: v.device.id }, diagnosticSearch: { id: diag.id } },
+                            resultsLimit: 1
+                        }).then(r => ({ id: diag.id, val: r[0]?.data }))
+                            .catch(() => ({ id: diag.id, val: undefined }))
+                    );
+
+                    // Fault fallback
+                    promisesPromises.push(
+                        this.api.call<FaultData[]>('Get', {
+                            typeName: 'FaultData',
+                            search: { deviceSearch: { id: v.device.id }, fromDate: new Date(Date.now() - 86400000).toISOString() },
+                            resultsLimit: 10
+                        }).then(r => ({ isFault: true, val: r }))
+                            .catch(() => ({ isFault: true, val: [] }))
+                    );
+
+                    const fallbackResults = await Promise.all(promisesPromises);
+                    fallbackResults.forEach((res: any) => {
+                        if (res.isFault) {
+                            if (res.val && res.val.length) faultMap.set(v.device.id, res.val);
+                        } else {
+                            if (res.val !== undefined) {
+                                if (!diagMap.has(v.device.id)) diagMap.set(v.device.id, new Map());
+                                diagMap.get(v.device.id)!.set(res.id, res.val);
+                            }
+                        }
+                    });
+                }
             };
 
             // Execute in chunks to respect concurrency
