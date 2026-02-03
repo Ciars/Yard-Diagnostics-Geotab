@@ -819,18 +819,15 @@ export class FleetDataService {
             // 2. Build multiCall pool
             const enrichCalls: any[] = [];
 
-            // A. Targeted Telemetry - Resilient Fetch
-            // Instead of filtering by Diagnostic ID in the query (which triggered server-side crashes),
-            // we fetch the latest 50 StatusData points per device and filter them in JS.
+            // A. Targeted Telemetry - Resilient Discovery
+            // We fetch the latest 10 points per device to scan for various telemetry types locally.
             vehicles.forEach(v => {
                 enrichCalls.push({
                     method: 'Get',
                     params: {
                         typeName: 'StatusData',
-                        search: {
-                            deviceSearch: { id: v.device.id }
-                        },
-                        resultsLimit: 50 // Fetch recent data to scan locally
+                        search: { deviceSearch: { id: v.device.id } },
+                        resultsLimit: 10
                     }
                 });
             });
@@ -844,10 +841,10 @@ export class FleetDataService {
             });
 
             // NOTE: FaultData remains DISABLED to prevent performance crashes.
-            console.log(`[enrichVehicleData] Queueing ${enrichCalls.length} targeted calls (Telemetry + Drivers)...`);
+            console.log(`[enrichVehicleData] Queueing ${enrichCalls.length} calls (Conservative Batching)...`);
 
             // 3. Execute SEQUENTIALLY to prevent portal timeouts
-            const BATCH_SIZE = 30; // Further reduced for maximum portal resilience
+            const BATCH_SIZE = 15; // Set to very low for maximum portal compatibility
             const flatResults: any[] = [];
 
             for (let i = 0; i < enrichCalls.length; i += BATCH_SIZE) {
@@ -870,21 +867,25 @@ export class FleetDataService {
             flatResults.forEach((item: any) => {
                 if (!item || typeof item !== 'object') return;
 
-                // Driver/User Identification
+                // 1. Driver/User Identification
                 if (item.name && item.id && !item.device && !item.diagnostic) {
                     const name = (item.firstName && item.lastName) ? `${item.firstName} ${item.lastName}` : item.name;
                     driverMap.set(item.id, name);
                     driverCount++;
                 }
-                // StatusData (Telemetry) Identification
+                // 2. StatusData (Telemetry) Identification
                 else if ('data' in item && 'diagnostic' in item) {
                     const devId = item.device?.id || item.device;
                     const diagId = typeof item.diagnostic === 'string' ? item.diagnostic : (item.diagnostic?.id || item.diagnostic);
 
                     if (devId && diagId && typeof item.data === 'number') {
+                        // DISCOVERY LOG: Log IDs to help identify Fuel/SOC
+                        if (telemetryCount < 100) {
+                            console.log(`[Discover-Telemetry] dev=${devId} diag=${diagId} val=${item.data}`);
+                        }
+
                         if (!diagMap.has(devId)) diagMap.set(devId, new Map());
 
-                        // Only take the NEWEST (first encountered) point for each diagnostic
                         if (!diagMap.get(devId)!.has(diagId)) {
                             diagMap.get(devId)!.set(diagId, item.data);
                             telemetryCount++;
@@ -900,15 +901,28 @@ export class FleetDataService {
                 const deviceId = v.device.id;
                 const dMap = diagMap.get(deviceId);
 
-                // Flexible fuel mapping (standard vs HD)
-                const fuel = dMap?.get(DiagnosticIds.FUEL_LEVEL) ?? dMap?.get('DiagnosticFuelLevelPercentageId');
-                const soc = dMap?.get(DiagnosticIds.STATE_OF_CHARGE);
+                // Aggressive Fallback Mapping
+                const fuel = dMap?.get(DiagnosticIds.FUEL_LEVEL) ??
+                    dMap?.get('DiagnosticFuelLevelPercentageId') ??
+                    dMap?.get('DiagnosticFuelLevelIdPercentage') ??
+                    dMap?.get('DiagnosticFuelLevelId');
+
+                const soc = dMap?.get(DiagnosticIds.STATE_OF_CHARGE) ??
+                    dMap?.get('DiagnosticElectricVehicleBatteryChargeId') ??
+                    dMap?.get('DiagnosticBatteryStateOfChargeId') ??
+                    dMap?.get('DiagnosticHVBatterySocId');
+
+                const volt = dMap?.get(DiagnosticIds.BATTERY_VOLTAGE) ??
+                    dMap?.get('DiagnosticEngineBatteryVoltageId') ??
+                    dMap?.get('DiagnosticMainBatteryVoltageId');
+
                 const dName = (v.status.driver && driverMap.get(v.status.driver.id)) || v.driverName || 'No Driver';
 
                 return {
                     ...v,
                     fuelLevel: fuel !== undefined ? fuel : v.fuelLevel,
                     stateOfCharge: soc !== undefined ? soc : v.stateOfCharge,
+                    batteryVoltage: volt !== undefined ? volt : v.batteryVoltage,
                     driverName: dName
                 };
             });
