@@ -836,7 +836,7 @@ export class FleetDataService {
             // We reverted to standard 'Get' because 'GetLatestStatusData' is not available.
             // To prevent GenericException, we use strict `resultsLimit: 1` and small batches.
 
-            const VEHICLE_BATCH_SIZE = 15; // Conservative batch size
+            const VEHICLE_BATCH_SIZE = 5; // Ultra-safe: 5 vehicles * 11 diags = 55 calls (Limit is ~100)
             const diagMap = new Map<string, Map<string, number>>();
             let telemetryCount = 0;
 
