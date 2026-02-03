@@ -809,7 +809,7 @@ export class FleetDataService {
 
         const startTime = Date.now();
         try {
-            console.log(`[enrichVehicleData] Starting stabilized enrichment for ${vehicles.length} vehicles...`);
+            console.log(`[enrichVehicleData] Starting targeted enrichment for ${vehicles.length} vehicles...`);
 
             // 1. Gather unique Driver IDs for targeted fetch
             const driverIds = Array.from(new Set(
@@ -817,23 +817,27 @@ export class FleetDataService {
             )) as string[];
 
             // 2. Build multiCall pool
-            // We use GLOBAL calls for SOC/Fuel because fetching the latest snapshot for the fleet 
-            // is actually faster and more reliable than 300 individual per-device calls.
             const enrichCalls: any[] = [];
 
-            // A. SOC and Fuel - LATEST snapshots for the whole fleet (2 calls total)
-            [DiagnosticIds.FUEL_LEVEL, DiagnosticIds.STATE_OF_CHARGE].forEach(diagId => {
-                enrichCalls.push({
-                    method: 'Get',
-                    params: {
-                        typeName: 'StatusData',
-                        search: { diagnosticSearch: { id: diagId } },
-                        resultsLimit: 5000 // Get latest for entire fleet
-                    }
+            // A. Targeted SOC and Fuel (2 calls per yard vehicle)
+            const telemetryDiagIds = [DiagnosticIds.FUEL_LEVEL, DiagnosticIds.STATE_OF_CHARGE];
+            vehicles.forEach(v => {
+                telemetryDiagIds.forEach(diagId => {
+                    enrichCalls.push({
+                        method: 'Get',
+                        params: {
+                            typeName: 'StatusData',
+                            search: {
+                                deviceSearch: { id: v.device.id },
+                                diagnosticSearch: { id: diagId },
+                                resultsLimit: 1
+                            }
+                        }
+                    });
                 });
             });
 
-            // B. Targeted Driver Name Fetch (1 call per unique driver)
+            // B. Targeted Driver Name Fetch
             driverIds.forEach(id => {
                 enrichCalls.push({
                     method: 'Get',
@@ -841,10 +845,8 @@ export class FleetDataService {
                 });
             });
 
-            // NOTE: FaultData enrichment is TEMPORARILY DISABLED to restore performance.
-            // Previous logs showed 240,000 faults being returned, causing OOM/Slowness.
-
-            console.log(`[enrichVehicleData] Queueing ${enrichCalls.length} calls (Global Telemetry + Targeted Drivers)...`);
+            // NOTE: FaultData remains DISABLED to prevent performance crashes.
+            console.log(`[enrichVehicleData] Queueing ${enrichCalls.length} targeted calls (Telemetry + Drivers)...`);
 
             // 3. Execute SEQUENTIALLY to prevent portal timeouts
             const BATCH_SIZE = 80;
@@ -870,13 +872,13 @@ export class FleetDataService {
             flatResults.forEach((item: any) => {
                 if (!item || typeof item !== 'object') return;
 
-                // Driver/User
+                // Driver/User Identification
                 if (item.name && item.id && !item.device && !item.diagnostic) {
                     const name = (item.firstName && item.lastName) ? `${item.firstName} ${item.lastName}` : item.name;
                     driverMap.set(item.id, name);
                     driverCount++;
                 }
-                // StatusData (Telemetry)
+                // StatusData (Telemetry) Identification
                 else if ('data' in item && 'diagnostic' in item) {
                     const devId = item.device?.id || item.device;
                     const diagId = typeof item.diagnostic === 'string' ? item.diagnostic : (item.diagnostic?.id || item.diagnostic);
