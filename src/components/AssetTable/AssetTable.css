@@ -14,16 +14,18 @@
     display: flex;
     flex-direction: column;
     height: 100%;
-    /* Ensure it takes full available height from parent */
     min-height: 600px;
     /* Safety: Never collapse below usable height, fixes "invisible list" if flex fails */
+
+    /* Grid layout shared between header and rows */
+    --table-grid-template: 180px 1.2fr 1.2fr 0.8fr 0.8fr 130px 1.1fr;
 }
 
 /* Header Grid */
 .asset-table__header {
     display: grid;
-    /* Grid Definition: Asset, Model, Driver, Fuel, SOC, Icons, Dur */
-    grid-template-columns: 180px 1.2fr 1.2fr 0.7fr 0.7fr 0.9fr 1.1fr 0.7fr;
+    /* Grid Definition: Asset, Model, Driver, Fuel, SOC, Icons, Stay */
+    grid-template-columns: var(--table-grid-template);
     background: #fff;
     border-bottom: 1px solid #eef2f6;
     padding: 14px 0;
@@ -82,7 +84,7 @@
 .asset-table__row {
     width: 100%;
     display: grid;
-    grid-template-columns: 180px 1.2fr 1.2fr 0.7fr 0.7fr 0.9fr 1.1fr 0.7fr;
+    grid-template-columns: var(--table-grid-template);
     padding: 16px 0;
     border: none;
     background: transparent;
@@ -113,6 +115,12 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    display: flex;
+    align-items: center;
+}
+
+.asset-table svg {
+    flex-shrink: 0;
 }
 
 .col-asset {
@@ -202,12 +210,17 @@
     bottom: 0;
 }
 
-/* Icons Column */
+/* Icons Column - Fixed width and stable layout */
 .col-icons {
     display: flex;
-    justify-content: space-around;
-    gap: 12px;
-    padding: 0 12px;
+    justify-content: flex-start;
+    gap: 10px;
+    padding: 0 16px;
+    min-width: 130px;
+}
+
+.col-icons>* {
+    flex-shrink: 0;
 }
 
 .icon--success {

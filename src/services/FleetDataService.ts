@@ -568,9 +568,10 @@ export class FleetDataService {
 
             console.log(`[getVehicleDataForZone] Zone found: ${targetZone.name}, fetching lightweight data...`);
 
-            // STEP 1: Fetch lightweight data (devices + statuses) - FAST
+            // TASK 1: FAST PATH - Only fetch essential data (Device + Status)
+            // Drivers and faults will be fetched in enrichment phase if needed
             const fetchStart = Date.now();
-            const [devices, statuses, drivers, faults] = await Promise.all([
+            const [devices, statuses] = await Promise.all([
                 this.api.call<Device[]>('Get', {
                     typeName: 'Device',
                     resultsLimit: 50000
@@ -579,24 +580,12 @@ export class FleetDataService {
                     typeName: 'DeviceStatusInfo',
                     search: {},
                     resultsLimit: 50000
-                }),
-                this.api.call<User[]>('Get', {
-                    typeName: 'User',
-                    search: { userSearch: { driverGroups: true } },
-                    resultsLimit: 50000
-                }),
-                this.api.call<FaultData[]>('Get', {
-                    typeName: 'FaultData',
-                    search: { fromDate: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString() },
-                    resultsLimit: 50000
                 })
             ]);
 
-            console.log(`[getVehicleDataForZone] Lightweight data fetched in ${Date.now() - fetchStart}ms:`, {
+            console.log(`[getVehicleDataForZone] Fast fetch completed in ${Date.now() - fetchStart}ms:`, {
                 devices: devices.length,
-                statuses: statuses.length,
-                drivers: drivers.length,
-                faults: faults.length
+                statuses: statuses.length
             });
 
             // Cache statuses for other methods to reuse
@@ -632,55 +621,25 @@ export class FleetDataService {
                 zoneDevices: zoneDevices.length
             });
 
-            // STEP 3: Fetch diagnostics ONLY for vehicles in zone - OPTIMIZED
-            const silentCheckStart = Date.now();
-            const silentDevices = zoneDevices.filter(d => {
-                const s = statusMap.get(d.id);
-                if (!s || !s.statusData) return true;
-
-                const hasEssentials = s.statusData.some(
-                    sd => sd.diagnostic?.id === DiagnosticIds.FUEL_LEVEL || sd.diagnostic?.id === DiagnosticIds.STATE_OF_CHARGE
-                );
-                return !hasEssentials;
-            });
-
-            console.log(`[getVehicleDataForZone] Silent device check completed in ${Date.now() - silentCheckStart}ms:`, {
-                silentDevices: silentDevices.length,
-                percentSilent: Math.round((silentDevices.length / zoneDevices.length) * 100) + '%'
-            });
-
-            // STEP 3.5: Fetch diagnostics (optional - graceful degradation if fails)
-            const diagStart = Date.now();
-            let silentDiagnostics: StatusData[] = [];
-
-            try {
-                // Only attempt diagnostic fetch if we have silent devices
-                if (silentDevices.length > 0) {
-                    console.log(`[getVehicleDataForZone] Fetching diagnostics for ${silentDevices.length} devices...`);
-                    silentDiagnostics = await this.fetchVehicleDiagnostics(silentDevices);
-                    console.log(`[getVehicleDataForZone] Diagnostics fetched in ${Date.now() - diagStart}ms`);
-                } else {
-                    console.log(`[getVehicleDataForZone] No silent devices, skipping diagnostic fetch`);
-                }
-            } catch (error) {
-                // GRACEFUL DEGRADATION: If diagnostic fetch fails, continue with statusData
-                console.warn(
-                    `[getVehicleDataForZone] Diagnostic fetch failed (${silentDevices.length} devices). ` +
-                    `Continuing with statusData snapshots only.`,
-                    error
-                );
-                // silentDiagnostics remains empty array - merge will use statusData instead
-            }
+            // TASK 6 FIX: Skip diagnostic fetch entirely - use statusData snapshots only
+            // The multiCall for diagnostics fails with GenericException in production.
+            // DeviceStatusInfo.statusData already contains fuel/SOC snapshots for active vehicles.
+            // Trade-off: Slightly less fresh data (acceptable for yard monitoring).
+            const silentDiagnostics: StatusData[] = [];
 
             // STEP 4: Merge and return
             const mergeStart = Date.now();
-            const result = this.mergeData(zoneDevices, zoneStatuses, drivers, faults, silentDiagnostics);
+            // Pass empty arrays for drivers/faults - will be enriched later if needed
+            const result = this.mergeData(zoneDevices, zoneStatuses, [], [], silentDiagnostics);
             console.log(`[getVehicleDataForZone] Merge completed in ${Date.now() - mergeStart}ms, ${result.length} vehicles`);
 
-            // VIN Decoding - await to prevent race condition
-            const vinStart = Date.now();
-            await this.enrichVehicleMetadata(result);
-            console.log(`[getVehicleDataForZone] VIN enrichment completed in ${Date.now() - vinStart}ms`);
+            // TASK 4: VIN Decoding - non-blocking background call
+            // Don't await - let the UI render immediately while VIN data populates
+            this.enrichVehicleMetadata(result).then(() => {
+                console.log(`[getVehicleDataForZone] VIN enrichment completed (background)`);
+            }).catch(err => {
+                console.warn(`[getVehicleDataForZone] VIN enrichment failed (non-critical):`, err);
+            });
 
             console.log(`[getVehicleDataForZone] TOTAL TIME: ${Date.now() - startTime}ms`);
             return result;
