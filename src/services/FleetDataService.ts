@@ -816,74 +816,68 @@ export class FleetDataService {
                 vehicles.map(v => v.status.driver?.id).filter(Boolean)
             )) as string[];
 
-            // 2. Define our "Target List" of diagnostics (Standard + Fallbacks)
-            const targetedDiagnostics = [
-                { id: DiagnosticIds.FUEL_LEVEL },
-                { id: 'DiagnosticFuelLevelPercentageId' },
-                { id: 'DiagnosticFuelLevelIdPercentage' },
-                { id: 'DiagnosticFuelLevelId' },
-                { id: DiagnosticIds.STATE_OF_CHARGE },
-                { id: 'DiagnosticElectricVehicleBatteryChargeId' },
-                { id: 'DiagnosticBatteryStateOfChargeId' },
-                { id: 'DiagnosticHVBatterySocId' },
-                { id: DiagnosticIds.BATTERY_VOLTAGE },
-                { id: 'DiagnosticEngineBatteryVoltageId' },
-                { id: 'DiagnosticMainBatteryVoltageId' }
-            ];
 
 
-            // 3. Batched Telemetry Fetch (Standard API - Optimized)
-            // We reverted to standard 'Get' because 'GetLatestStatusData' is not available.
-            // To prevent GenericException, we use strict `resultsLimit: 1` and small batches.
+            // 3. Parallel Single-Vehicle Telemetry Fetch (Ultra-Resilient)
+            // We fetch each vehicle's data individually (in parallel) to avoid "Massive MultiCall" server errors.
+            // Concurrency Limit: 5 simultaneous HTTP requests.
 
-            const VEHICLE_BATCH_SIZE = 5; // Ultra-safe: 5 vehicles * 11 diags = 55 calls (Limit is ~100)
+            const CONCURRENCY_LIMIT = 5;
             const diagMap = new Map<string, Map<string, number>>();
             let telemetryCount = 0;
 
-            for (let i = 0; i < vehicles.length; i += VEHICLE_BATCH_SIZE) {
-                const vehicleChunk = vehicles.slice(i, i + VEHICLE_BATCH_SIZE);
-                const batchCalls: any[] = [];
+            const processVehicle = async (v: VehicleData) => {
+                const vehicleCalls: any[] = [];
+                // Only use KNOWN VALID diagnostic IDs to prevent GenericException
+                const safeDiagnostics = [
+                    { id: DiagnosticIds.FUEL_LEVEL },
+                    { id: 'DiagnosticFuelLevelPercentageId' },
+                    { id: 'DiagnosticFuelLevelId' }, // Liters
+                    { id: DiagnosticIds.STATE_OF_CHARGE },
+                    { id: 'DiagnosticElectricVehicleBatteryChargeId' },
+                    { id: 'DiagnosticHVBatterySocId' },
+                    { id: DiagnosticIds.BATTERY_VOLTAGE },
+                    { id: 'DiagnosticEngineBatteryVoltageId' }
+                ];
 
-                // For each vehicle in this small batch, queue queries for ALL target diagnostics
-                vehicleChunk.forEach(v => {
-                    targetedDiagnostics.forEach(diag => {
-                        batchCalls.push({
-                            method: 'Get',
-                            params: {
-                                typeName: 'StatusData',
-                                search: {
-                                    deviceSearch: { id: v.device.id },
-                                    diagnosticSearch: { id: diag.id }
-                                },
-                                resultsLimit: 1 // CRITICAL: Fetch only the single latest point
-                            }
-                        });
+                safeDiagnostics.forEach(diag => {
+                    vehicleCalls.push({
+                        method: 'Get',
+                        params: {
+                            typeName: 'StatusData',
+                            search: {
+                                deviceSearch: { id: v.device.id },
+                                diagnosticSearch: { id: diag.id }
+                            },
+                            resultsLimit: 1
+                        }
                     });
                 });
 
                 try {
-                    // unexpected large batch? No, it's 15 * 11 ≈ 165 calls per multicall. 
-                    // This is safe for Geotab.
-                    const batchResults = await this.api.multiCall<any[]>(batchCalls);
-                    const flatResults = batchResults.flat();
-
-                    flatResults.forEach((item: any) => {
+                    // This multiCall adds ~8 sub-requests for ONE vehicle. Perfectly safe.
+                    const results = await this.api.multiCall<any[]>(vehicleCalls);
+                    results.flat().forEach((item: any) => {
                         if (!item || typeof item !== 'object') return;
-
                         const devId = (item.device?.id || item.device) as string;
                         const diagId = (typeof item.diagnostic === 'string' ? item.diagnostic : item.diagnostic?.id) as string;
 
                         if (devId && diagId && typeof item.data === 'number') {
                             if (!diagMap.has(devId)) diagMap.set(devId, new Map());
-                            // Since we limited to 1, this IS the latest.
                             diagMap.get(devId)!.set(diagId, item.data);
                             telemetryCount++;
                         }
                     });
-
                 } catch (e) {
-                    console.warn(`[enrichVehicleData] Batch failed at index ${i}:`, e);
+                    // Log partial failure but don't stop other vehicles
+                    console.warn(`[enrichVehicleData] Failed for vehicle ${v.device.id}:`, e);
                 }
+            };
+
+            // Execute in chunks to respect concurrency
+            for (let i = 0; i < vehicles.length; i += CONCURRENCY_LIMIT) {
+                const chunk = vehicles.slice(i, i + CONCURRENCY_LIMIT);
+                await Promise.all(chunk.map(v => processVehicle(v)));
             }
 
             // 4. Driver Names (Small multiCall)
