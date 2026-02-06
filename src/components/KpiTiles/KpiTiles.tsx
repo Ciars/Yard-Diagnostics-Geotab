@@ -7,7 +7,7 @@
 
 import { useFleetStore, selectActiveKpiFilter } from '@/store/useFleetStore';
 import type { KpiCounts, KpiFilterType } from '@/types/geotab';
-import { AlertTriangle, WifiOff, PauseCircle, Zap } from 'lucide-react';
+import { IconAlertTriangle, IconWifiOff, IconPlayerPause, IconBolt, IconCamera } from '@tabler/icons-react';
 import './KpiTiles.css';
 
 interface KpiTilesProps {
@@ -29,30 +29,36 @@ const TILE_CONFIG: TileConfig[] = [
         label: 'CRITICAL HEALTH',
         description: 'Requiring immediate action',
         colorClass: 'kpi-tile--critical',
-        icon: AlertTriangle,
+        icon: IconAlertTriangle,
     },
     {
         key: 'silent',
         label: 'SILENT ASSETS',
         description: 'No signal > 24 hours',
         colorClass: 'kpi-tile--silent',
-        icon: WifiOff,
+        icon: IconWifiOff,
     },
     {
         key: 'dormant',
         label: 'DORMANT',
         description: 'Stationary > 14 days',
         colorClass: 'kpi-tile--dormant',
-        icon: PauseCircle,
+        icon: IconPlayerPause,
     },
     {
         key: 'charging',
         label: 'VEHICLES CHARGING',
         description: 'Connected to power',
         colorClass: 'kpi-tile--charging',
-        icon: Zap,
+        icon: IconBolt,
     },
-
+    {
+        key: 'camera',
+        label: 'CAMERA HEALTH',
+        description: 'Connectivity or lens issues',
+        colorClass: 'kpi-tile--camera',
+        icon: IconCamera,
+    },
 ];
 
 export function KpiTiles({ kpis, isLoading }: KpiTilesProps) {

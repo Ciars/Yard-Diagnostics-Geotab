@@ -18,9 +18,20 @@
  */
 
 import type { FaultData, ExceptionEvent } from '@/types/geotab';
+import { GeotabSources, CAMERA_IOX_KEYWORDS, formatDiagnosticId } from '@/types/geotab';
 
 export type FaultSeverity = 'critical' | 'severe' | 'warning' | 'info' | 'history';
 export type FaultSource = 'device' | 'ecu';
+
+/**
+ * Fault Bucket Categories (3-Bucket System)
+ * Categorizes faults by operational priority for UK/Ireland fleet operations
+ */
+export type FaultBucket =
+    | 'camera_iox'      // Camera & Hardware Integration (IOX-based systems)
+    | 'device_health'   // Telematics Device Health (GO unit)
+    | 'vehicle_health'  // Vehicle Health (Engine/OBD)
+    | 'unknown';        // Uncategorized
 
 export interface ClassifiedFault {
     raw: FaultData;
@@ -32,6 +43,7 @@ export interface ClassifiedFault {
     isOngoing: boolean; // Should count towards "Active Faults" badge
     date: string;
     count?: number; // For grouping duplicates
+    bucket: FaultBucket; // 3-bucket categorization
 }
 
 export interface VehicleFaultSummary {
@@ -39,6 +51,46 @@ export interface VehicleFaultSummary {
     ongoingCount: number;
     severeCount: number; // Subset of ongoing that are critical/severe
     historicalCount: number;
+    // Bucket counts
+    cameraIoxCount: number;
+    deviceHealthCount: number;
+    vehicleHealthCount: number;
+}
+
+const GO_CONTROLLER_PATTERN = /\bgo\d*\b/;
+const TELEMATICS_NAME_KEYWORDS = [
+    'telematics device fault',
+    'geotab go',
+    'go device',
+    'go unit'
+];
+
+export function isTelematicsFault(fault: FaultData): boolean {
+    const diagId = fault.diagnostic?.id || '';
+    if (diagId.startsWith('DiagnosticDevice') || diagId.startsWith('DiagnosticGps')) {
+        return true;
+    }
+
+    const failureModeSource = (fault.failureMode?.source || '').toLowerCase();
+    if (
+        failureModeSource.includes('telematics') ||
+        failureModeSource.includes('device') ||
+        (failureModeSource.includes('geotab') && failureModeSource.includes('go'))
+    ) {
+        return true;
+    }
+
+    const controller = (fault.controller?.name || '').toLowerCase();
+    if (
+        controller.includes('telematics') ||
+        controller.includes('geotab') ||
+        GO_CONTROLLER_PATTERN.test(controller)
+    ) {
+        return true;
+    }
+
+    const diagnosticName = (fault.diagnostic?.name || '').toLowerCase();
+    return TELEMATICS_NAME_KEYWORDS.some((keyword) => diagnosticName.includes(keyword));
 }
 
 /**
@@ -65,11 +117,19 @@ export function classifyFaults(faults: FaultData[], exceptions: ExceptionEvent[]
     const severe = ongoing.filter(f => f.severity === 'critical' || f.severity === 'severe');
     const historical = allItems.filter(f => f.severity === 'history');
 
+    // Calculate bucket counts (only ongoing faults)
+    const cameraIox = ongoing.filter(f => f.bucket === 'camera_iox');
+    const deviceHealth = ongoing.filter(f => f.bucket === 'device_health');
+    const vehicleHealth = ongoing.filter(f => f.bucket === 'vehicle_health');
+
     return {
         items: allItems,
         ongoingCount: ongoing.length,
         severeCount: severe.length,
-        historicalCount: historical.length
+        historicalCount: historical.length,
+        cameraIoxCount: cameraIox.length,
+        deviceHealthCount: deviceHealth.length,
+        vehicleHealthCount: vehicleHealth.length
     };
 }
 
@@ -103,7 +163,8 @@ function classifyException(ex: ExceptionEvent): ClassifiedFault {
         code: 'RULE',
         severity,
         isOngoing: isActive,
-        date: ex.activeFrom
+        date: ex.activeFrom,
+        bucket: 'vehicle_health' // Exceptions are typically rule-based and vehicle-centric
     };
 }
 
@@ -113,6 +174,7 @@ function classifyException(ex: ExceptionEvent): ClassifiedFault {
 function classifyFault(fault: FaultData): ClassifiedFault {
     const source = detectSource(fault);
     const status = parseStatus(fault); // 'active', 'pending', 'active+pending'
+    const bucket = detectFaultBucket(fault); // 3-bucket categorization
 
     let severity: FaultSeverity = 'info';
     let isOngoing = false;
@@ -166,26 +228,111 @@ function classifyFault(fault: FaultData): ClassifiedFault {
         code: formatCode(fault),
         severity,
         isOngoing,
-        date: fault.dateTime
+        date: fault.dateTime,
+        bucket
     };
+}
+
+/**
+ * Detect Geotab Source ID from fault data
+ * Returns the Geotab source identifier (e.g., 'SourceGeotabGoId', 'SourceObdId')
+ */
+function detectGeotabSource(fault: FaultData): string {
+    // Try to get source from failureMode first (most reliable)
+    const failureModeSource = (fault.failureMode?.source || '').toLowerCase();
+
+    // Map common patterns to Geotab source IDs
+    if (failureModeSource.includes('go') || failureModeSource.includes('device')) {
+        return GeotabSources.GEOTAB_GO;
+    }
+    if (failureModeSource.includes('obd')) {
+        return GeotabSources.OBD;
+    }
+    if (failureModeSource.includes('j1939') || failureModeSource.includes('1939')) {
+        return GeotabSources.J1939;
+    }
+    if (failureModeSource.includes('third') || failureModeSource.includes('party')) {
+        return GeotabSources.THIRD_PARTY;
+    }
+    if (failureModeSource.includes('proprietary')) {
+        return GeotabSources.PROPRIETARY;
+    }
+
+    if (isTelematicsFault(fault)) {
+        return GeotabSources.GEOTAB_GO;
+    }
+
+    // Default to OBD for vehicle faults
+    return GeotabSources.OBD;
+}
+
+/**
+ * Detect which of the 3 buckets a fault belongs to
+ * 
+ * Priority Order (matches Python script):
+ * 1. Camera/IOX Hardware (name-based detection - cameras may appear as GO device faults)
+ * 2. Telematics Device Health (GO unit with specific codes)
+ * 3. Vehicle Health (OBD/J1939 engine faults)
+ */
+function detectFaultBucket(fault: FaultData): FaultBucket {
+    const diagnosticName = fault.diagnostic?.name || '';
+    const source = detectGeotabSource(fault);
+
+    // Note: Numeric code detection logic removed as it's not currently used
+    // Can be added later if specific code-based categorization is needed
+
+    // PRIORITY 1: Camera/IOX Hardware Detection
+    // Cameras connect via IOX port but may appear as GO device faults
+    const isCameraKeyword = CAMERA_IOX_KEYWORDS.some(keyword =>
+        diagnosticName.toLowerCase().includes(keyword.toLowerCase())
+    );
+
+    if (isCameraKeyword) {
+        return 'camera_iox';
+    }
+
+    // Also check for explicit third-party sources
+    if (source === GeotabSources.THIRD_PARTY || source === GeotabSources.PROPRIETARY) {
+        return 'camera_iox';
+    }
+
+    // PRIORITY 2: Telematics Device Health (GO Unit)
+    if (source === GeotabSources.GEOTAB_GO) {
+        return 'device_health';
+    }
+
+    // PRIORITY 3: Vehicle Health (Engine/OBD)
+    if (source === GeotabSources.OBD || source === GeotabSources.J1939) {
+        return 'vehicle_health';
+    }
+
+    // Fallback: categorize by diagnostic ID patterns
+    const diagId = fault.diagnostic?.id || '';
+    if (diagId.startsWith('DiagnosticDevice') || diagId.startsWith('DiagnosticGps')) {
+        return 'device_health';
+    }
+
+    return 'unknown';
 }
 
 /**
  * Determine if fault is from Device or ECU
  */
 function detectSource(fault: FaultData): FaultSource {
-    const src = ((fault as any).source || '').toLowerCase(); // Cast to any as source might be missing in type
-    const controller = (fault.controller?.name || '').toLowerCase();
-    const diagId = (fault.diagnostic?.id || '');
-
-    // Common Device-Level Diagnostics (telematics)
-    if (diagId.startsWith('DiagnosticDevice') || diagId.startsWith('DiagnosticGps')) {
+    const geotabSource = detectGeotabSource(fault);
+    if (
+        geotabSource === GeotabSources.GEOTAB_GO ||
+        geotabSource === GeotabSources.THIRD_PARTY ||
+        geotabSource === GeotabSources.PROPRIETARY
+    ) {
         return 'device';
     }
 
-    if (src.includes('device') || src.includes('go') || controller.includes('telematics')) {
+    const src = ((fault as any).source || '').toLowerCase();
+    if (src.includes('device') || src.includes('go')) {
         return 'device';
     }
+
     return 'ecu';
 }
 
@@ -228,8 +375,25 @@ function formatCode(fault: FaultData): string {
  * Readable Description
  */
 function formatDescription(fault: FaultData): string {
-    const diagName = fault.diagnostic?.name || 'Unknown Fault';
-    const controllerName = fault.controller?.name || '';
+    const rawDiagName = fault.diagnostic?.name?.trim();
+    const failureModeName = fault.failureMode?.name?.trim();
+    const controllerName = fault.controller?.name?.trim() || '';
+    const diagnosticId = fault.diagnostic?.id?.trim();
+
+    let diagName = rawDiagName;
+
+    // Geotab often returns placeholder names; promote better fallbacks before rendering.
+    if (!diagName || diagName.toLowerCase() === 'unknown fault' || diagName.toLowerCase() === 'unknown diagnostic') {
+        if (failureModeName && !failureModeName.toLowerCase().includes('unknown')) {
+            diagName = failureModeName;
+        } else if (diagnosticId) {
+            diagName = formatDiagnosticId(diagnosticId);
+        } else if (fault.failureMode?.code) {
+            diagName = `Fault code ${fault.failureMode.code}`;
+        } else {
+            diagName = 'Unnamed Fault';
+        }
+    }
 
     // If we have a controller name and it's not generic "Telematics", add it for context
     if (controllerName && !controllerName.toLowerCase().includes('telematics')) {

@@ -17,7 +17,7 @@
 }
 
 .app-header .subtitle {
-    color: rgba(255, 255, 255, 0.8);
+    color: var(--on-brand-secondary);
     font-size: 0.875rem;
 }
 
@@ -35,7 +35,7 @@
     padding: var(--spacing-xl);
     text-align: center;
     max-width: 400px;
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    border: 1px solid var(--color-border);
 }
 
 .status-card h2 {
@@ -56,7 +56,7 @@
 .api-status {
     margin-top: var(--spacing-md);
     padding-top: var(--spacing-md);
-    border-top: 1px solid rgba(255, 255, 255, 0.1);
+    border-top: 1px solid var(--color-border);
 }
 
 .status-label {

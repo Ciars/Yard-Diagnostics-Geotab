@@ -9,8 +9,9 @@
  * - Sortable columns
  */
 
-import { useMemo, useRef } from 'react';
+import { useMemo, useRef, useState, useEffect, useCallback } from 'react';
 import { List } from 'react-window';
+import type { ListImperativeAPI } from 'react-window';
 
 import { useFleetStore, selectExpandedVehicleId } from '@/store/useFleetStore';
 
@@ -25,20 +26,22 @@ interface AssetTableProps {
     vehicles: VehicleData[];
     isLoading?: boolean;
     isEnriching?: boolean;
+    onRowHoverChange?: (vehicleId: string | null) => void;
+    onRowToggle?: (vehicleId: string, isExpanding: boolean) => void;
 }
 
-// Helper to adapt v2 props (spread) to what AssetRow expects (data prop)
-// Moved OUTSIDE to prevent unmounting/remounting on every render
-const Row = ({ index, style, vehicles, toggleExpanded, isEnriching }: any) => (
-    <AssetRow
-        data={{ vehicles, toggleExpanded, isEnriching }}
-        index={index}
-        style={style}
-    />
-);
+const COLLAPSED_ROW_HEIGHT = 58;
+const EXPANDED_ROW_HEIGHT = 860;
 
-export function AssetTable({ vehicles, isLoading, isEnriching }: AssetTableProps) {
-    const listRef = useRef<any>(null);
+
+export function AssetTable({
+    vehicles,
+    isLoading,
+    isEnriching,
+    onRowHoverChange,
+    onRowToggle
+}: AssetTableProps) {
+    const listRef = useRef<ListImperativeAPI | null>(null);
     const expandedVehicleId = useFleetStore(selectExpandedVehicleId);
     const setExpandedVehicle = useFleetStore((s) => s.setExpandedVehicle);
 
@@ -48,25 +51,56 @@ export function AssetTable({ vehicles, isLoading, isEnriching }: AssetTableProps
     const { sortedVehicles, sortField, sortDirection, handleSort } = useVehicleSort(filteredVehicles);
 
     // Handle row click (toggle expansion)
-    const toggleExpanded = (id: string) => {
-        setExpandedVehicle(expandedVehicleId === id ? null : id);
-    };
+    const toggleExpanded = useCallback((id: string) => {
+        const isExpanding = expandedVehicleId !== id;
+        setExpandedVehicle(isExpanding ? id : null);
+        onRowToggle?.(id, isExpanding);
+    }, [expandedVehicleId, onRowToggle, setExpandedVehicle]);
 
     // Item data passed to rows
     const itemData = useMemo(() => ({
         vehicles: sortedVehicles,
         toggleExpanded,
-        isEnriching
-    }), [sortedVehicles, expandedVehicleId, isEnriching]);
+        isEnriching,
+        onRowHoverChange
+    }), [sortedVehicles, toggleExpanded, isEnriching, onRowHoverChange]);
+
+    useEffect(() => {
+        return () => onRowHoverChange?.(null);
+    }, [onRowHoverChange]);
+
+    // Force list reset when expansion changes
+    const [listVersion, setListVersion] = useState(0);
+    useEffect(() => {
+        setListVersion(v => v + 1);
+    }, [expandedVehicleId]);
+
+    const expandedIndex = useMemo(() => {
+        if (!expandedVehicleId) return -1;
+        return sortedVehicles.findIndex((vehicle) => vehicle.device.id === expandedVehicleId);
+    }, [sortedVehicles, expandedVehicleId]);
+
+    useEffect(() => {
+        if (expandedIndex < 0) return;
+
+        const frame = requestAnimationFrame(() => {
+            listRef.current?.scrollToRow({
+                index: expandedIndex,
+                align: 'start',
+                behavior: 'smooth'
+            });
+        });
+
+        return () => cancelAnimationFrame(frame);
+    }, [expandedIndex, listVersion]);
 
     // Dynamic row height
-    const getItemSize = (index: number) => {
+    const getItemSize = useMemo(() => (index: number) => {
         const vehicle = sortedVehicles[index];
-        if (!vehicle) return 58;
-        // Base row height 58px + Expanded content ~1200px
+        if (!vehicle) return COLLAPSED_ROW_HEIGHT;
         const isExpanded = vehicle.device.id === expandedVehicleId;
-        return isExpanded ? 1200 : 58;
-    };
+        return isExpanded ? EXPANDED_ROW_HEIGHT : COLLAPSED_ROW_HEIGHT;
+    }, [sortedVehicles, expandedVehicleId]);
 
     if (isLoading) {
         return (
@@ -116,6 +150,7 @@ export function AssetTable({ vehicles, isLoading, isEnriching }: AssetTableProps
 
             <div className="asset-table__body-container">
                 <List
+                    key={listVersion}
                     listRef={listRef}
                     style={{
                         height: '100%',
@@ -124,7 +159,7 @@ export function AssetTable({ vehicles, isLoading, isEnriching }: AssetTableProps
                     rowCount={sortedVehicles.length}
                     rowHeight={getItemSize}
                     rowProps={itemData}
-                    rowComponent={Row}
+                    rowComponent={AssetRow as any}
                     className="virtual-list"
                 />
             </div>

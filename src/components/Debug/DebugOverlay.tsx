@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useFleetStore, selectSelectedZone } from '../../store/useFleetStore';
 import { GeotabApiFactory } from '../../services/GeotabApiFactory';
+import { IconBug, IconTrash, IconAlertTriangle } from '@tabler/icons-react';
 
 export const DebugOverlay: React.FC = () => {
     const vehicles = useFleetStore((s) => s.vehicles);
@@ -18,9 +19,9 @@ export const DebugOverlay: React.FC = () => {
         const handleDebugEvent = (e: CustomEvent) => {
             if (e.detail?.type === 'error') {
                 setError(e.detail.message);
-                log(`❌ ${e.detail.message}`);
+                log(`[ERROR] ${e.detail.message}`);
             } else {
-                log(`ℹ️ ${e.detail.message}`);
+                log(`[INFO] ${e.detail.message}`);
             }
         };
 
@@ -79,8 +80,13 @@ export const DebugOverlay: React.FC = () => {
             boxShadow: '0 0 10px rgba(0,255,0,0.2)'
         }}>
             <h3 style={{ margin: '0 0 10px', borderBottom: '1px solid #333', display: 'flex', justifyContent: 'space-between' }}>
-                <span>🕵️ Deep Debug</span>
-                <button onClick={() => { setError(null); setDebugLog([]); }} style={{ cursor: 'pointer', background: 'none', border: 'none', color: '#666' }}>🗑️</button>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                    <IconBug size={14} />
+                    Deep Debug
+                </span>
+                <button onClick={() => { setError(null); setDebugLog([]); }} style={{ cursor: 'pointer', background: 'none', border: 'none', color: '#666' }}>
+                    <IconTrash size={14} />
+                </button>
             </h3>
 
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '5px', marginBottom: '10px' }}>
@@ -100,7 +106,10 @@ export const DebugOverlay: React.FC = () => {
                     wordBreak: 'break-word',
                     userSelect: 'text'
                 }}>
-                    <strong>⚠️ LAST ERROR:</strong><br />
+                    <strong style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                        <IconAlertTriangle size={13} />
+                        LAST ERROR:
+                    </strong><br />
                     {error}
                 </div>
             )}
@@ -113,7 +122,7 @@ export const DebugOverlay: React.FC = () => {
                             fontSize: '10px',
                             borderBottom: '1px solid #222',
                             paddingBottom: '2px',
-                            color: l.startsWith('❌') ? '#ff6666' : '#ccffcc'
+                            color: l.startsWith('[ERROR]') ? '#ff6666' : '#ccffcc'
                         }}>
                             {l}
                         </div>

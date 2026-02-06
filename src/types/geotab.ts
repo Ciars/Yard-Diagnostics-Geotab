@@ -244,6 +244,18 @@ export const DiagnosticIds = {
     /** Odometer reading */
     ODOMETER: 'DiagnosticOdometerId',
 
+    /** Engine running hours (total) */
+    ENGINE_HOURS: 'DiagnosticEngineHoursId',
+
+    /** DEF (Diesel Exhaust Fluid / AdBlue) Level percentage */
+    DEF_LEVEL: 'DiagnosticDefFluidLevelId',
+
+    /** Engine coolant temperature */
+    COOLANT_TEMP: 'DiagnosticEngineCoolantTemperatureId',
+
+    /** Engine speed (RPM) */
+    ENGINE_SPEED: 'DiagnosticEngineSpeedId',
+
     // Telematics / Device Health
     DEVICE_UNPLUGGED: 'DiagnosticDeviceUnpluggedId',
     DEVICE_POWER_REMOVED: 'DiagnosticDevicePowerRemovedId',
@@ -261,6 +273,71 @@ export const DiagnosticIds = {
 } as const;
 
 export type DiagnosticId = typeof DiagnosticIds[keyof typeof DiagnosticIds];
+
+// =============================================================================
+// Geotab Source IDs (for Fault Categorization)
+// =============================================================================
+
+/**
+ * Geotab Diagnostic Source IDs
+ * Used to determine the origin of a fault for proper categorization
+ */
+export const GeotabSources = {
+    /** Geotab GO device (telematics unit) */
+    GEOTAB_GO: 'SourceGeotabGoId',
+    /** Third-party device (e.g., external sensors) */
+    THIRD_PARTY: 'SourceThirdPartyId',
+    /** Proprietary OEM device */
+    PROPRIETARY: 'SourceProprietaryId',
+    /** OBD-II (Light Duty Vehicles) */
+    OBD: 'SourceObdId',
+    /** J1939 (Heavy Duty Vehicles) */
+    J1939: 'SourceJ1939Id'
+} as const;
+
+/**
+ * Critical Device Fault Codes (Geotab GO Unit)
+ * These codes indicate specific device health issues for UK/Ireland fleet operations
+ */
+export const DeviceFaultCodes = {
+    /** Device unplugged or tampered with - CRITICAL */
+    UNPLUGGED: 136,
+    /** Loose installation or mounting - causes false accelerometer data */
+    LOOSE_INSTALL_166: 166,
+    /** Loose installation (alternate code) */
+    LOOSE_INSTALL_174: 174,
+    /** Power loss event */
+    POWER_LOSS_130: 130,
+    /** Device reboot event */
+    POWER_LOSS_131: 131,
+    /** Modem or network failure */
+    MODEM_FAILURE: 147
+} as const;
+
+/**
+ * Emissions-related keywords for UK/Ireland compliance
+ * Faults containing these keywords are critical for commercial fleet operations
+ */
+export const EMISSIONS_KEYWORDS = [
+    'adblue',
+    'reductant',
+    'dpf',
+    'particulate',
+    'def',
+    'scr'
+] as const;
+
+/**
+ * Camera/IOX Hardware keywords for detection
+ * Cameras and peripherals connect via IOX port but may appear as GO device faults
+ */
+export const CAMERA_IOX_KEYWORDS = [
+    'iox',
+    'usb',
+    'camera',
+    'aux',
+    'video'
+] as const;
 
 /**
  * Common Geotab Diagnostic Name Mappings
@@ -441,6 +518,25 @@ export interface ApiError {
 // Application-Specific Types
 // =============================================================================
 
+/**
+ * Extended diagnostic metrics for comprehensive vehicle health monitoring
+ * These values are fetched on-demand when expanding vehicle details
+ */
+export interface ExtendedDiagnostics {
+    /** Odometer reading in kilometers */
+    odometer?: number;
+    /** Total engine running hours */
+    engineHours?: number;
+    /** DEF (AdBlue) fluid level percentage (0-100) */
+    defLevel?: number;
+    /** Engine coolant temperature in Celsius */
+    coolantTemp?: number;
+    /** Current engine speed in RPM */
+    engineSpeed?: number;
+    /** Electrical System Rating - calculated health score (0-100) */
+    electricalSystemRating?: number;
+}
+
 export interface VehicleData {
     device: Device;
     status: DeviceStatusInfo;
@@ -488,6 +584,7 @@ export interface VehicleData {
     };
     activeFaults: FaultData[]; // Keep for backward compat or raw view
     lastTrip?: Trip;
+    extendedDiagnostics?: ExtendedDiagnostics; // On-demand health metrics
     cameraStatus?: {
         isOnline: boolean;
         health?: 'good' | 'warning' | 'critical' | 'offline';
@@ -501,11 +598,13 @@ export type KpiFilterType =
     | 'critical'
     | 'silent'
     | 'dormant'
-    | 'charging';
+    | 'charging'
+    | 'camera';
 
 export interface KpiCounts {
     critical: number;
     silent: number;
     dormant: number;
     charging: number;
+    camera: number;
 }

@@ -47,7 +47,7 @@ export class VinDecoderService {
                     return parsed.data || {};
                 }
             }
-        } catch (e) {
+        } catch (_error) {
             // console.warn('[VinDecoder] Cache load failed:', e);
         }
         return {};
@@ -62,7 +62,7 @@ export class VinDecoderService {
                 version: CACHE_VERSION,
                 data: this.cache
             }));
-        } catch (e) {
+        } catch (_error) {
             // console.warn('[VinDecoder] Cache save failed:', e);
         }
     }
@@ -113,7 +113,7 @@ export class VinDecoderService {
                     this.saveCache();
                     // console.log(`[VinDecoder] Successfully decoded ${decoded.length} VINs`);
                 }
-            } catch (error) {
+            } catch (_error) {
                 // console.error('[VinDecoder] DecodeVins API failed:', error);
                 // Don't throw - gracefully degrade to showing "--" for make/model
             }

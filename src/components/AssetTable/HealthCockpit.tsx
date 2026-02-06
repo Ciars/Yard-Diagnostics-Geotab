@@ -1,16 +1,16 @@
 import type { VehicleData, VehicleIssue, IssuePriority } from '@/types/geotab';
 import { groupIssuesByPriority } from '@/services/IssueService';
 import {
-    AlertTriangle,
-    CheckCircle2,
-    ClipboardList,
-    RefreshCw,
-    AlertCircle,
-    Eye,
-    Bell,
-    Activity,
-    WifiOff,
-} from 'lucide-react';
+    IconAlertTriangle,
+    IconCircleCheck,
+    IconClipboardList,
+    IconRefresh,
+    IconAlertCircle,
+    IconEye,
+    IconBell,
+    IconActivity,
+    IconWifiOff,
+} from '@tabler/icons-react';
 import './HealthCockpit.css';
 
 interface HealthCockpitProps {
@@ -18,11 +18,11 @@ interface HealthCockpitProps {
 }
 
 // Priority styling
-const PRIORITY_STYLES: Record<IssuePriority, { className: string; icon: typeof AlertTriangle }> = {
-    recurring: { className: 'issue--recurring', icon: RefreshCw },
-    alert: { className: 'issue--alert', icon: AlertCircle },
-    monitor: { className: 'issue--monitor', icon: Eye },
-    info: { className: 'issue--info', icon: Bell },
+const PRIORITY_STYLES: Record<IssuePriority, { className: string; icon: typeof IconAlertTriangle }> = {
+    recurring: { className: 'issue--recurring', icon: IconRefresh },
+    alert: { className: 'issue--alert', icon: IconAlertCircle },
+    monitor: { className: 'issue--monitor', icon: IconEye },
+    info: { className: 'issue--info', icon: IconBell },
 };
 
 function formatRelativeTime(isoDate: string): string {
@@ -120,14 +120,14 @@ export function HealthCockpit({ vehicle }: HealthCockpitProps) {
             {/* COLUMN 1: DVIR (Driver Reports) */}
             <div className={`health-column health-column--dvir ${!health.dvir.isClean ? 'has-defects' : ''}`}>
                 <div className="column-header">
-                    <span className="icon-wrapper"><ClipboardList size={18} /></span>
+                    <span className="icon-wrapper"><IconClipboardList size={18} /></span>
                     <h3>Driver Reports (DVIR)</h3>
                 </div>
 
                 <div className="column-content">
                     {health.dvir.isClean ? (
                         <div className="status-card status-card--clean">
-                            <CheckCircle2 size={32} className="status-icon--success" />
+                            <IconCircleCheck size={32} className="status-icon--success" />
                             <div className="status-text">
                                 <strong>No Defects Reported</strong>
                                 <span>Vehicle safe to operate</span>
@@ -137,7 +137,7 @@ export function HealthCockpit({ vehicle }: HealthCockpitProps) {
                         <div className="defects-list">
                             {health.dvir.defects.map(defect => (
                                 <div key={defect.id} className={`defect-row ${defect.isRepaired ? 'defect-row--repaired' : ''}`}>
-                                    <AlertTriangle size={14} className={`defect-icon ${defect.isRepaired ? 'defect-icon--repaired' : ''}`} />
+                                    <IconAlertTriangle size={14} className={`defect-icon ${defect.isRepaired ? 'defect-icon--repaired' : ''}`} />
                                     <div className="defect-row__content">
                                         <span className="defect-row__name">{defect.defectName}</span>
                                         <div className="defect-row__meta">
@@ -161,7 +161,7 @@ export function HealthCockpit({ vehicle }: HealthCockpitProps) {
             {/* COLUMN 2: VEHICLE ISSUES - FLAT LIST WITH ALL DATA VISIBLE */}
             <div className="health-column health-column--issues">
                 <div className="column-header">
-                    <span className="icon-wrapper"><Activity size={18} /></span>
+                    <span className="icon-wrapper"><IconActivity size={18} /></span>
                     <h3>Fault Codes</h3>
                     {totalIssues > 0 && (
                         <span className="issue-count-badge">{totalIssues}</span>
@@ -172,7 +172,7 @@ export function HealthCockpit({ vehicle }: HealthCockpitProps) {
                     {/* Device connectivity alert */}
                     {health.isDeviceOffline && (
                         <div className="connectivity-alert">
-                            <WifiOff size={16} />
+                            <IconWifiOff size={16} />
                             <div>
                                 <strong>Device Offline</strong>
                                 {health.lastHeartbeat && (
@@ -184,7 +184,7 @@ export function HealthCockpit({ vehicle }: HealthCockpitProps) {
 
                     {allIssues.length === 0 && !health.isDeviceOffline ? (
                         <div className="status-card status-card--clean">
-                            <CheckCircle2 size={32} className="status-icon--success" />
+                            <IconCircleCheck size={32} className="status-icon--success" />
                             <div className="status-text">
                                 <strong>No Fault Codes</strong>
                                 <span>No active or pending faults</span>

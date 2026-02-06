@@ -8,7 +8,7 @@
     height: 100%;
     width: 100%;
     position: relative;
-    background: #eef2f6;
+    background: var(--surface-subtle);
 }
 
 .zone-map__container {
@@ -23,8 +23,8 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    background: #f9fafb;
-    border: 2px dashed #e5e7eb;
+    background: var(--surface-canvas);
+    border: 2px dashed var(--border-default);
 }
 
 .zone-map__placeholder {
@@ -32,8 +32,9 @@
 }
 
 .zone-map__placeholder-icon {
-    display: block;
-    font-size: 2rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     margin-bottom: var(--spacing-sm);
 }
 
@@ -47,23 +48,23 @@
     position: absolute;
     bottom: 12px;
     right: 12px;
-    background: rgba(255, 255, 255, 0.9);
+    background: rgba(255, 255, 255, 0.94);
     padding: 6px 12px;
-    border-radius: 4px;
+    border-radius: var(--radius-sm);
     display: flex;
     gap: 12px;
     font-size: 0.65rem;
     font-weight: 600;
-    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.1);
+    box-shadow: var(--shadow-1);
     z-index: 1000;
-    border: 1px solid #eef2f6;
+    border: 1px solid var(--border-default);
 }
 
 .legend-item {
     display: flex;
     align-items: center;
     gap: 6px;
-    color: #64748b;
+    color: var(--text-secondary-app);
 }
 
 .legend-dot {
@@ -78,28 +79,42 @@
     left: 50%;
     transform: translateX(-50%);
     z-index: 1000;
-    background: #1e3a8a;
-    /* Deep Navy Blue */
-    color: white;
+    background: var(--action-primary);
+    color: var(--text-inverse-app);
     padding: 8px 16px;
-    border-radius: 8px;
+    border-radius: var(--radius-md);
     font-size: 0.85rem;
     font-weight: 600;
     display: flex;
     align-items: center;
     gap: 8px;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+    box-shadow: var(--shadow-2);
     cursor: pointer;
     transition: background 0.2s;
     border: none;
 }
 
 .zone-map__updates-badge:hover {
-    background: #1e40af;
+    background: var(--action-primary-hover);
 }
 
 .zone-map__updates-badge .icon {
-    font-size: 0.9rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.zone-map__cluster-hint {
+    position: absolute;
+    top: 12px;
+    right: 12px;
+    z-index: 1000;
+    background: rgba(31, 40, 51, 0.88);
+    color: var(--text-inverse-app);
+    padding: 6px 10px;
+    border-radius: var(--radius-sm);
+    font-size: 0.7rem;
+    font-weight: 600;
 }
 
 /* Popup styles */
@@ -113,6 +128,16 @@
     margin-bottom: 4px;
 }
 
+.marker-popup--cluster span {
+    display: block;
+}
+
+.marker-popup__status {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
 /* Override Leaflet defaults for better styling */
 .leaflet-container {
     font-family: inherit;
@@ -124,6 +149,19 @@
 
 .leaflet-popup-content {
     margin: 10px 12px;
+}
+
+.zone-map__cluster-label {
+    color: var(--text-inverse-app);
+    font-size: 0.72rem;
+    font-weight: 700;
+    background: transparent;
+    border: none;
+    box-shadow: none;
+}
+
+.zone-map__cluster-label::before {
+    display: none;
 }
 
 /* Responsive */

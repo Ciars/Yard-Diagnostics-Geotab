@@ -19,7 +19,7 @@
 [[headers]]
   for = "/*"
   [headers.values]
-    X-Frame-Options = "ALLOW-FROM https://my.geotab.com"
+    Content-Security-Policy = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://*.openstreetmap.org; connect-src 'self' https://*.geotab.com; frame-ancestors https://*.geotab.com;"
     X-Content-Type-Options = "nosniff"
     Referrer-Policy = "strict-origin-when-cross-origin"
 

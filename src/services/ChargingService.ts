@@ -131,12 +131,13 @@ export function parseChargingStatus(statusData: StatusData[], chargeEvents: Char
                 result.isElectricVehicle = true;
                 break;
 
-            case DiagnosticIds.EV_RANGE:
+            case DiagnosticIds.EV_RANGE: {
                 // Convert km to miles if needed (Geotab returns km)
                 const rangeKm = status.data ?? 0;
                 result.evRange = Math.round(rangeKm * 0.621371);
                 result.isElectricVehicle = true;
                 break;
+            }
         }
     }
 
@@ -155,7 +156,7 @@ export function formatChargingStatus(status: ChargingStatus): string {
         const soc = status.stateOfCharge !== null
             ? `${status.stateOfCharge}%`
             : '';
-        return `⚡ Charging ${soc}`.trim();
+        return `Charging ${soc}`.trim();
     }
 
     if (status.stateOfCharge !== null) {
@@ -174,17 +175,17 @@ export function getBatteryLevelIndicator(stateOfCharge: number | null): {
     icon: string;
 } {
     if (stateOfCharge === null) {
-        return { level: 'unknown', color: '#6b7280', icon: '❓' };
+        return { level: 'unknown', color: '#6b7280', icon: 'unknown' };
     }
 
     if (stateOfCharge >= 80) {
-        return { level: 'high', color: '#10b981', icon: '🔋' };
+        return { level: 'high', color: '#10b981', icon: 'battery-high' };
     }
     if (stateOfCharge >= 50) {
-        return { level: 'medium', color: '#f59e0b', icon: '🔋' };
+        return { level: 'medium', color: '#f59e0b', icon: 'battery-medium' };
     }
     if (stateOfCharge >= 20) {
-        return { level: 'low', color: '#f97316', icon: '🪫' };
+        return { level: 'low', color: '#f97316', icon: 'battery-low' };
     }
-    return { level: 'critical', color: '#ef4444', icon: '🪫' };
+    return { level: 'critical', color: '#ef4444', icon: 'battery-critical' };
 }

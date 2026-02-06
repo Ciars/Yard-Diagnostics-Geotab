@@ -191,18 +191,18 @@ export function getBatteryStatusIndicator(voltage: number | null): {
     icon: string;
 } {
     if (voltage === null) {
-        return { status: 'unknown', color: '#6b7280', icon: '❓' };
+        return { status: 'unknown', color: '#6b7280', icon: 'unknown' };
     }
 
     if (voltage >= WARNING_BATTERY_THRESHOLD_VOLTS) {
-        return { status: 'good', color: '#10b981', icon: '🟢' };
+        return { status: 'good', color: '#10b981', icon: 'status-good' };
     }
 
     if (voltage >= LOW_BATTERY_THRESHOLD_VOLTS) {
-        return { status: 'warning', color: '#f59e0b', icon: '🟡' };
+        return { status: 'warning', color: '#f59e0b', icon: 'status-warning' };
     }
 
-    return { status: 'critical', color: '#ef4444', icon: '🔴' };
+    return { status: 'critical', color: '#ef4444', icon: 'status-critical' };
 }
 
 /**

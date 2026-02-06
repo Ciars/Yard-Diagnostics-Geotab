@@ -1,9 +1,24 @@
 import React, { useState } from 'react';
-import { VehicleData } from '@/types/geotab';
+import { VehicleData, ExtendedDiagnostics, GeotabSession } from '@/types/geotab';
 import { ClassifiedFault } from '@/services/FaultService';
 import './AssetHealthDashboard.css';
 import { formatBatteryVoltage, getBatteryStatusIndicator, analyzeCameraDiagnostics } from '@/services/HealthService';
 import { useAssetHealth } from '@/hooks/useAssetHealth'; // New Hook
+import { useGeotabApi } from '@/hooks/useGeotabApi';
+import {
+    IconSearch,
+    IconAlertTriangle,
+    IconTool,
+    IconClipboardList,
+    IconCircleFilled,
+    IconRoute,
+    IconBolt,
+    IconClockHour3,
+    IconDroplet,
+    IconTemperature,
+    IconBattery
+} from '@tabler/icons-react';
+import { FaultBuckets } from './FaultBuckets';
 
 interface AssetHealthDashboardProps {
     vehicle: VehicleData;
@@ -11,7 +26,8 @@ interface AssetHealthDashboardProps {
 
 export const AssetHealthDashboard: React.FC<AssetHealthDashboardProps> = ({ vehicle }) => {
     // 1. Hook: Fetch Deep Data
-    const { isLoading, error, analysis, faults, exceptions, statusData } = useAssetHealth(vehicle);
+    const { isLoading, error, analysis, faults, exceptions, statusData, extendedDiagnostics } = useAssetHealth(vehicle);
+    const { api } = useGeotabApi();
     const [showDebug, setShowDebug] = useState(false);
 
     // Initial / Fallback Data (while loading, or for static fields)
@@ -46,7 +62,7 @@ export const AssetHealthDashboard: React.FC<AssetHealthDashboardProps> = ({ vehi
                     @keyframes spin { to { transform: rotate(360deg); } }
                 `}</style>
                 <div className="ah-spinner"></div>
-                <span>Analyzing deep diagnostic history (12 Months)...</span>
+                <span>Analyzing deep diagnostic history (Last 3 Months)...</span>
             </div>
         );
     }
@@ -58,13 +74,7 @@ export const AssetHealthDashboard: React.FC<AssetHealthDashboardProps> = ({ vehi
     // Use FRESH analysis from deep fetch
     const ongoingFaults: ClassifiedFault[] = analysis.items.filter((f: ClassifiedFault) => f.isOngoing);
     const severeCount = analysis.severeCount;
-    const hasCriticalIssues = severeCount > 0;
-
-    const statusColor = hasCriticalIssues ? 'var(--color-danger)' : 'var(--color-success)';
-    const statusText = hasCriticalIssues
-        ? 'Attention Required - Detailed analysis below'
-        : 'No Immediate Actions Detected';
-    const statusIcon = hasCriticalIssues ? '⚠️' : '✅';
+    const openDvirDefects = getOpenDvirDefectGroups(vehicle);
 
     return (
         <div className="ah-dashboard">
@@ -85,21 +95,15 @@ export const AssetHealthDashboard: React.FC<AssetHealthDashboardProps> = ({ vehi
                     )}
                 </div>
 
-                <div className="ah-status-banner" style={{ borderLeftColor: statusColor }}>
-                    <div className="ah-status-icon" style={{ color: statusColor }}>{statusIcon}</div>
-                    <div className="ah-status-text">
-                        <strong>{statusText}</strong>
-                        <span className="ah-status-sub">
-                            Deep Search Results: {ongoingFaults.length} active issues found (12-month window)
-                        </span>
-                    </div>
-                </div>
             </div>
 
             {/* DEBUG RAW DATA VIEW */}
             {showDebug && (
                 <div className="ah-debug-panel" style={{ background: '#111', padding: '10px', margin: '10px 0', borderRadius: '4px', overflow: 'auto', maxHeight: '300px', fontSize: '11px', fontFamily: 'monospace' }}>
-                    <h4 style={{ margin: '0 0 10px 0', color: '#fff' }}>🔍 Raw Geotab Data (Last 12 Months)</h4>
+                    <h4 style={{ margin: '0 0 10px 0', color: '#fff', display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                        <IconSearch size={14} />
+                        Raw Geotab Data (Last 3 Months)
+                    </h4>
                     <div className="ah-debug-cols" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '10px' }}>
                         <div className="ah-debug-col">
                             <strong style={{ display: 'block', marginBottom: '5px', color: '#aaa' }}>FaultData ({faults.length})</strong>
@@ -121,45 +125,99 @@ export const AssetHealthDashboard: React.FC<AssetHealthDashboardProps> = ({ vehi
                 </div>
             )}
 
+            {/* 1.5. Immediate Actions Banner (Only if severe faults exist) */}
+            {severeCount > 0 && (
+                <div className="ah-immediate-actions" style={{
+                    background: 'linear-gradient(135deg, rgba(239, 68, 68, 0.1), rgba(239, 68, 68, 0.05))',
+                    border: '1px solid rgba(239, 68, 68, 0.3)',
+                    borderRadius: '8px',
+                    padding: '16px',
+                    margin: '16px 0'
+                }}>
+                    <h3 style={{ margin: '0 0 8px 0', color: 'var(--color-danger)', fontSize: '16px', display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                        <IconAlertTriangle size={16} />
+                        Immediate Actions
+                    </h3>
+                    <div style={{ fontSize: '14px', color: 'var(--color-text-muted)' }}>
+                        <strong style={{ color: 'var(--color-danger)' }}>{severeCount} severe fault{severeCount !== 1 ? 's' : ''}</strong> detected in the last 7 days
+                    </div>
+                </div>
+            )}
+
             <div className="ah-grid">
-                {/* 2. LEFT COLUMN: Asset Health */}
+                {/* 2. LEFT COLUMN: Asset Health with 3-Bucket Fault Display */}
                 <div className="ah-col left">
                     <h3>Asset Health</h3>
                     <hr className="ah-divider" />
 
+                    {/* Diagnostics Panel */}
                     <div className="ah-cards-row">
-
-
-                        {/* Fault Summary Card */}
-                        <div className="ah-card">
+                        <div className="ah-card ah-card--full-width">
                             <div className="ah-card-header">
-                                <span>⚠️ Fault Summary (Active)</span>
+                                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                                    <IconTool size={14} />
+                                    Diagnostics
+                                </span>
                             </div>
                             <div className="ah-card-body">
-                                <div className="ah-stat-row">
-                                    <span className="label">Ongoing faults</span>
-                                    <span className="value">{analysis.ongoingCount}</span>
-                                </div>
-                                <div className="ah-stat-row">
-                                    <span className="label">Severe faults</span>
-                                    <span className="value">{analysis.severeCount}</span>
-                                </div>
-                                <div className="ah-divider-mini"></div>
-                                <div className="ah-fault-list-mini">
-                                    {ongoingFaults.length === 0 && <span className="ah-empty-text">No active faults found</span>}
-                                    {groupFaultsForDisplay(ongoingFaults).map((f: ClassifiedFault) => (
-                                        <div key={f.id} className={`ah-fault-item ${f.severity}`}>
-                                            <div className="ah-fault-main">
-                                                {f.code && f.code !== '' && <span className="code">{f.code}</span>}
-                                                <span className="desc">
-                                                    {formatCommonNames(f.description)}
-                                                    {f.count && f.count > 1 && <span className="ah-count-badge">x{f.count}</span>}
-                                                </span>
-                                            </div>
-                                            <span className="date">{new Date(f.date).toLocaleDateString()}</span>
-                                        </div>
-                                    ))}
-                                </div>
+                                <DiagnosticsGrid diagnostics={extendedDiagnostics} vehicle={vehicle} />
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* DVIR Defects */}
+                    <div className="ah-cards-row" style={{ marginTop: '16px' }}>
+                        <div className="ah-card ah-card--full-width">
+                            <div className="ah-card-header">
+                                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                                    <IconClipboardList size={14} />
+                                    Open DVIR Defects
+                                </span>
+                                <span className="ah-card-subtitle">
+                                    {openDvirDefects.length} open group{openDvirDefects.length !== 1 ? 's' : ''}
+                                </span>
+                            </div>
+                            <div className="ah-card-body">
+                                <DvirDefectsPanel
+                                    groups={openDvirDefects}
+                                    onOpenDetails={async (group) => {
+                                        const fallbackUrl = 'https://my.geotab.com';
+                                        if (!api) {
+                                            window.open(fallbackUrl, '_blank', 'noopener,noreferrer');
+                                            return;
+                                        }
+
+                                        try {
+                                            const session = await api.getSession();
+                                            const detailsUrl = buildDvirDetailsUrl(
+                                                session,
+                                                vehicle.device.id,
+                                                group.latestDefectId
+                                            );
+                                            window.open(detailsUrl, '_blank', 'noopener,noreferrer');
+                                        } catch {
+                                            window.open(fallbackUrl, '_blank', 'noopener,noreferrer');
+                                        }
+                                    }}
+                                />
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="ah-cards-row" style={{ marginTop: '16px' }}>
+                        {/* 3-Bucket Fault Display */}
+                        <div className="ah-card ah-card--full-width">
+                            <div className="ah-card-header">
+                                <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                                    <IconAlertTriangle size={14} />
+                                    Fault Analysis (Active)
+                                </span>
+                                <span className="ah-card-subtitle">
+                                    {analysis.ongoingCount} ongoing · {analysis.severeCount} severe
+                                </span>
+                            </div>
+                            <div className="ah-card-body">
+                                <FaultBuckets faults={ongoingFaults} />
                             </div>
                         </div>
                     </div>
@@ -174,7 +232,7 @@ export const AssetHealthDashboard: React.FC<AssetHealthDashboardProps> = ({ vehi
                         <div className="ah-device-header">
                             <span className="device-type">GO9</span>
                             <span className={`device-status-pill ${isOffline ? 'offline' : 'active'}`}>
-                                {isOffline ? 'Offline' : '● Active'}
+                                {isOffline ? 'Offline' : 'Active'}
                             </span>
                         </div>
 
@@ -199,8 +257,8 @@ export const AssetHealthDashboard: React.FC<AssetHealthDashboardProps> = ({ vehi
                                 ? <span className="ah-empty-text">System healthy</span>
                                 : analysis.items.filter((f: ClassifiedFault) => f.source === 'device' && f.isOngoing).map((f: ClassifiedFault) => (
                                     <div key={f.id} className="ah-device-fault-row">
-                                        <span className="ah-dot red">●</span>
-                                        <span>{formatCommonNames(f.description)}</span>
+                                        <IconCircleFilled size={8} color="#dc2626" />
+                                        <span>{f.description}</span>
                                     </div>
                                 ))
                             }
@@ -211,7 +269,7 @@ export const AssetHealthDashboard: React.FC<AssetHealthDashboardProps> = ({ vehi
                         <div className="ah-device-header">
                             <span className="device-type">{vehicle.cameraStatus?.name || 'Camera'}</span>
                             <span className={`device-status-pill ${vehicle.cameraStatus ? (vehicle.cameraStatus.isOnline ? 'active' : 'offline') : 'muted'}`}>
-                                {!vehicle.cameraStatus ? 'Not Detected' : (vehicle.cameraStatus.isOnline ? '● Active' : 'Offline')}
+                                {!vehicle.cameraStatus ? 'Not Detected' : (vehicle.cameraStatus.isOnline ? 'Active' : 'Offline')}
                             </span>
                         </div>
                         <div className="ah-device-details">
@@ -234,7 +292,7 @@ export const AssetHealthDashboard: React.FC<AssetHealthDashboardProps> = ({ vehi
                                 <div className="ah-camera-details">
                                     {camHealth.details.map((detail, idx) => (
                                         <div key={idx} className="ah-device-fault-row">
-                                            <span className={`ah-dot ${detail.includes('Normally') || detail.includes('OK') ? 'green' : 'red'}`}>●</span>
+                                            <IconCircleFilled size={8} color={detail.includes('Normally') || detail.includes('OK') ? '#16a34a' : '#dc2626'} />
                                             <span style={{ fontSize: '12px' }}>{detail}</span>
                                         </div>
                                     ))}
@@ -252,8 +310,8 @@ export const AssetHealthDashboard: React.FC<AssetHealthDashboardProps> = ({ vehi
                                         (f.description?.toLowerCase().includes('camera') || f.description?.toLowerCase().includes('video')) && f.isOngoing
                                     ).map((f, idx) => (
                                         <div key={idx} className="ah-device-fault-row">
-                                            <span className="ah-dot red">●</span>
-                                            <span style={{ fontSize: '12px', color: 'var(--color-danger)' }}>{formatCommonNames(f.description)}</span>
+                                            <IconCircleFilled size={8} color="#dc2626" />
+                                            <span style={{ fontSize: '12px', color: 'var(--color-danger)' }}>{f.description}</span>
                                         </div>
                                     ))}
                                 </div>
@@ -269,56 +327,242 @@ export const AssetHealthDashboard: React.FC<AssetHealthDashboardProps> = ({ vehi
 // --- Helpers ---
 
 /**
- * Group duplicates in the UI list to prevent flooding
+ * Clean up ugly Geotab names
+ * (Moved to FaultBuckets.tsx - keeping as comment for reference)
  */
-function groupFaultsForDisplay(faults: ClassifiedFault[]): ClassifiedFault[] {
-    const grouped: Record<string, ClassifiedFault> = {};
 
-    faults.forEach(f => {
-        // Create a unique key for grouping
-        const key = `${f.code}-${f.description}-${f.source}`;
+// --- Helper Functions ---
 
-        if (!grouped[key]) {
-            grouped[key] = { ...f, count: 1 };
-        } else {
-            // Keep the most recent date
-            if (new Date(f.date) > new Date(grouped[key].date)) {
-                grouped[key].date = f.date;
-            }
-            grouped[key].count = (grouped[key].count || 1) + 1;
+interface DiagnosticsGridProps {
+    diagnostics?: ExtendedDiagnostics;
+    vehicle: VehicleData;
+}
+
+const DiagnosticsGrid: React.FC<DiagnosticsGridProps> = ({ diagnostics, vehicle }) => {
+    const items = [
+        {
+            label: 'Odometer',
+            value: diagnostics?.odometer ? `${Math.round(diagnostics.odometer).toLocaleString()} km` : 'N/A',
+            icon: IconRoute
+        },
+        {
+            label: 'Electrical System Rating',
+            value: diagnostics?.electricalSystemRating !== undefined
+                ? `${diagnostics.electricalSystemRating}%`
+                : 'N/A',
+            color: diagnostics?.electricalSystemRating !== undefined
+                ? diagnostics.electricalSystemRating > 80 ? '#10b981' : diagnostics.electricalSystemRating > 50 ? '#f59e0b' : '#ef4444'
+                : undefined,
+            icon: IconBolt
+        },
+        {
+            label: 'Engine Hours',
+            value: diagnostics?.engineHours !== undefined
+                ? `${diagnostics.engineHours.toLocaleString(undefined, { maximumFractionDigits: 1 })} h`
+                : 'N/A',
+            icon: IconClockHour3
+        },
+        {
+            label: 'DEF Level',
+            value: diagnostics?.defLevel !== undefined ? `${Math.round(diagnostics.defLevel)}%` : 'N/A',
+            color: diagnostics?.defLevel !== undefined
+                ? diagnostics.defLevel > 30 ? '#10b981' : diagnostics.defLevel > 15 ? '#f59e0b' : '#ef4444'
+                : undefined,
+            icon: IconDroplet
+        },
+        {
+            label: 'Coolant Temp',
+            value: diagnostics?.coolantTemp !== undefined ? `${Math.round(diagnostics.coolantTemp)}°C` : 'N/A',
+            color: diagnostics?.coolantTemp !== undefined
+                ? diagnostics.coolantTemp < 90 ? '#10b981' : diagnostics.coolantTemp < 95 ? '#f59e0b' : '#ef4444'
+                : undefined,
+            icon: IconTemperature
+        },
+        {
+            label: 'Battery Voltage',
+            value: vehicle.batteryVoltage !== undefined
+                ? `${vehicle.batteryVoltage.toFixed(1)} V`
+                : 'N/A',
+            icon: IconBattery
+        }
+    ];
+
+    return (
+        <div style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
+            gap: '12px',
+            padding: '8px 0'
+        }}>
+            {items.map((item, idx) => (
+                <div key={idx} style={{
+                    padding: '12px',
+                    background: 'rgba(255,255,255,0.02)',
+                    borderRadius: '6px',
+                    border: '1px solid rgba(255,255,255,0.05)'
+                }}>
+                    <div style={{ fontSize: '11px', color: 'var(--color-text-muted)', marginBottom: '4px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                        <span style={{ display: 'inline-flex', alignItems: 'center' }}>
+                            <item.icon size={14} />
+                        </span>
+                        <span>{item.label}</span>
+                    </div>
+                    <div style={{
+                        fontSize: '16px',
+                        fontWeight: '600',
+                        color: item.color || 'var(--color-text-primary)'
+                    }}>
+                        {item.value}
+                    </div>
+                </div>
+            ))}
+        </div>
+    );
+};
+
+interface DvirDefectGroup {
+    key: string;
+    defectName: string;
+    count: number;
+    latestDate: string;
+    latestDefectId: string;
+    latestStatus: string;
+    latestDriver: string;
+    latestComment?: string;
+}
+
+function isDvirOpen(defect: VehicleData['health']['dvir']['defects'][number]): boolean {
+    if (defect.isRepaired === true) return false;
+    if (defect.repairStatus === 'Repaired' || defect.repairStatus === 'NotNecessary') return false;
+    return true;
+}
+
+function getOpenDvirDefectGroups(vehicle: VehicleData): DvirDefectGroup[] {
+    const defects = vehicle.health?.dvir?.defects ?? [];
+    const grouped = new Map<string, DvirDefectGroup>();
+
+    defects.filter(isDvirOpen).forEach((defect) => {
+        const key = defect.defectName.trim().toLowerCase();
+        const existing = grouped.get(key);
+        const defectTime = new Date(defect.date).getTime();
+
+        if (!existing) {
+            grouped.set(key, {
+                key,
+                defectName: defect.defectName,
+                count: 1,
+                latestDate: defect.date,
+                latestDefectId: defect.id,
+                latestStatus: defect.repairStatus || 'NotRepaired',
+                latestDriver: defect.driverName || 'Unknown Driver',
+                latestComment: defect.comment
+            });
+            return;
+        }
+
+        existing.count += 1;
+        const existingTime = new Date(existing.latestDate).getTime();
+        if (defectTime > existingTime) {
+            existing.latestDate = defect.date;
+            existing.latestDefectId = defect.id;
+            existing.latestStatus = defect.repairStatus || 'NotRepaired';
+            existing.latestDriver = defect.driverName || 'Unknown Driver';
+            existing.latestComment = defect.comment;
         }
     });
 
-    return Object.values(grouped).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+    return Array.from(grouped.values()).sort(
+        (a, b) => new Date(b.latestDate).getTime() - new Date(a.latestDate).getTime()
+    );
 }
 
-/**
- * Clean up ugly Geotab names
- */
-function formatCommonNames(name: string): string {
-    if (!name) return 'Unknown System Fault';
+function buildDvirDetailsUrl(session: GeotabSession, deviceId: string, defectId: string): string {
+    const origin = `https://${session.path}/${session.database}`;
+    const safeDeviceId = encodeURIComponent(deviceId);
+    const safeDefectId = encodeURIComponent(defectId);
 
-    // 1. Handle common ugly concatenations specifically
-    let clean = name;
+    // Canonical DVIR deep-link pattern provided by user:
+    // /#dvir,device:{deviceId},id:{dvirLogOrDefectId},trailer:!n
+    if (defectId) {
+        return `${origin}/#dvir,device:${safeDeviceId},id:${safeDefectId},trailer:!n`;
+    }
+    return `${origin}/#dvir,device:${safeDeviceId},trailer:!n`;
+}
 
-    // "LowPriorityWarningLightUnknown Fault" -> "Low Priority Warning Light"
-    if (clean.includes("Unknown Fault")) {
-        clean = clean.replace("Unknown Fault", "").trim();
-        if (!clean) return "General System Fault";
+const DvirDefectsPanel: React.FC<{
+    groups: DvirDefectGroup[];
+    onOpenDetails: (group: DvirDefectGroup) => void | Promise<void>;
+}> = ({ groups, onOpenDetails }) => {
+    const formatDateTime = (date: string) => {
+        const parsed = new Date(date);
+        if (Number.isNaN(parsed.getTime())) return date;
+        return parsed.toLocaleString('en-GB', {
+            day: '2-digit',
+            month: 'short',
+            year: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: false
+        });
+    };
+
+    if (groups.length === 0) {
+        return (
+            <div style={{ fontSize: '13px', color: 'var(--color-text-muted)', padding: '8px 0' }}>
+                No open DVIR defects.
+            </div>
+        );
     }
 
-    // 2. Handle specific technical IDs manually
-    if (clean.includes("DeviceRestartedBecauseOfFirmwareUpdated")) return "Firmware Update (Restart)";
-    if (clean.includes("DeviceRestartedBecauseOfUserRequest")) return "Device Restart (User)";
-    if (clean === "LowPriorityWarningLight") return "Low Priority Warning Light";
-    if (clean === "GeneralVehicleWarningLight") return "General Vehicle Warning Light";
-
-    // 3. Robust CamelCase Splitter
-    clean = clean.replace(/([a-z])([A-Z])/g, '$1 $2');
-    clean = clean.replace(/([A-Z])([A-Z][a-z])/g, '$1 $2');
-
-    // 4. Cleanup excessive spaces or technical terms
-    clean = clean.replace(/_/g, ' ').replace(/\s+/g, ' ').trim();
-
-    return clean || name;
-}
+    return (
+        <div style={{ display: 'grid', gap: '8px' }}>
+            {groups.map((group) => (
+                <div
+                    key={group.key}
+                    style={{
+                        border: '1px solid rgba(160, 31, 14, 0.22)',
+                        background: 'var(--state-danger-bg)',
+                        borderRadius: '6px',
+                        padding: '10px'
+                    }}
+                >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                        <span style={{ fontWeight: 700, color: 'var(--color-text-primary)' }}>{group.defectName}</span>
+                        <span style={{ fontSize: '11px', fontWeight: 700, color: 'var(--color-danger)', background: 'rgba(160,31,14,0.12)', borderRadius: '8px', padding: '2px 8px' }}>
+                            {group.latestStatus}
+                        </span>
+                        <span style={{ fontSize: '11px', fontWeight: 700, color: 'var(--color-text-muted)' }}>
+                            ×{group.count}
+                        </span>
+                    </div>
+                    <div style={{ marginTop: '6px', fontSize: '12px', color: 'var(--color-text-muted)' }}>
+                        Latest: {formatDateTime(group.latestDate)} • Driver: {group.latestDriver}
+                    </div>
+                    {group.latestComment && (
+                        <div style={{ marginTop: '4px', fontSize: '12px', color: 'var(--color-text-primary)' }}>
+                            "{group.latestComment}"
+                        </div>
+                    )}
+                    <div style={{ marginTop: '8px' }}>
+                        <button
+                            type="button"
+                            onClick={() => onOpenDetails(group)}
+                            style={{
+                                border: '1px solid var(--color-border)',
+                                background: 'var(--surface-main)',
+                                color: 'var(--color-text-primary)',
+                                borderRadius: '6px',
+                                padding: '4px 10px',
+                                fontSize: '12px',
+                                fontWeight: 700,
+                                cursor: 'pointer'
+                            }}
+                        >
+                            Details
+                        </button>
+                    </div>
+                </div>
+            ))}
+        </div>
+    );
+};

@@ -107,7 +107,7 @@ export function formatDormancyDuration(days: number, isJustArrived: boolean = fa
     const roundedDays = Math.round(days);
 
     if (roundedDays >= DORMANT_THRESHOLD_DAYS) {
-        return `${roundedDays}d ⚠️`; // Warning indicator for dormant
+        return `${roundedDays}d`;
     }
 
     return `${roundedDays}d`;

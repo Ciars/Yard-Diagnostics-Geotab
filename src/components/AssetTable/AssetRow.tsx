@@ -1,21 +1,31 @@
 import { memo } from 'react';
 import { useFleetStore, selectExpandedVehicleId } from '@/store/useFleetStore';
-import { ChevronRight, ChevronDown, Clipboard, ClipboardCheck, Wifi, Battery, Camera, Zap, RefreshCw } from 'lucide-react';
+import {
+    IconChevronRight,
+    IconChevronDown,
+    IconClipboard,
+    IconClipboardCheck,
+    IconCamera,
+    IconBolt,
+    IconRefresh,
+    IconCar,
+    IconAntennaBars5
+} from '@tabler/icons-react';
 import type { VehicleData } from '@/types/geotab';
+import { isTelematicsFault } from '@/services/FaultService';
 import { AssetHealthDashboard } from './AssetHealthDashboard';
 
 interface AssetRowProps {
-    data: {
-        vehicles: VehicleData[];
-        toggleExpanded: (id: string) => void;
-        isEnriching?: boolean;
-    };
+    vehicles: VehicleData[];
+    toggleExpanded: (id: string) => void;
+    isEnriching?: boolean;
+    onRowHoverChange?: (vehicleId: string | null) => void;
     index: number;
     style: React.CSSProperties;
 }
 
-export const AssetRow = memo(({ data, index, style }: AssetRowProps) => {
-    const { vehicles, toggleExpanded } = data;
+export const AssetRow = memo((props: AssetRowProps) => {
+    const { vehicles, toggleExpanded, isEnriching, onRowHoverChange, index, style } = props;
     const vehicle = vehicles[index];
     // We subscribe to the store prop because 'isExpanded' changes derived from it.
     // However, for react-window with memo/areEqual, we rely on the parent to invalidate or pass data.
@@ -53,23 +63,82 @@ export const AssetRow = memo(({ data, index, style }: AssetRowProps) => {
         return `${days}d`;
     };
 
+    const normalizeFaultSeverity = (severity?: string): 'major' | 'minor' | 'unknown' => {
+        if (!severity) return 'unknown';
+        const normalized = severity.toLowerCase();
+        if (normalized === 'critical' || normalized === 'severe' || normalized === 'high') return 'major';
+        if (normalized === 'warning' || normalized === 'medium' || normalized === 'low' || normalized === 'info') return 'minor';
+        return 'unknown';
+    };
+
+    const getVehicleFaultIconClass = (v: VehicleData): string => {
+        const vehicleFaults = (v.activeFaults || []).filter((fault) => !isTelematicsFault(fault));
+        if (!vehicleFaults.length && !v.hasCriticalFaults) return 'icon--success';
+
+        const hasMajorKnownFault = vehicleFaults.some((fault) => {
+            const severity = normalizeFaultSeverity(fault.failureMode?.severity);
+            return severity === 'major';
+        }) || v.hasCriticalFaults;
+
+        if (hasMajorKnownFault) return 'icon--danger';
+        return 'icon--warning';
+    };
+
+    const getDvirIconClass = (v: VehicleData): string => {
+        return v.hasUnrepairedDefects ? 'icon--danger' : 'icon--success';
+    };
+
+    const getTelematicsIconClass = (v: VehicleData): string => {
+        const lastHeardAt = v.status?.dateTime ? new Date(v.status.dateTime).getTime() : 0;
+        const hoursSinceHeartbeat = lastHeardAt ? (Date.now() - lastHeardAt) / (1000 * 60 * 60) : Number.POSITIVE_INFINITY;
+        const NOT_COMMUNICATING_RED_HOURS = 72;
+        if (!v.status.isDeviceCommunicating || hoursSinceHeartbeat >= NOT_COMMUNICATING_RED_HOURS) {
+            return 'icon--danger';
+        }
+
+        const deviceIssues = v.health.issues.filter((issue) => issue.source === 'device');
+        const hasSeriousDeviceIssue = deviceIssues.some((issue) => issue.priority === 'alert');
+        if (hasSeriousDeviceIssue) return 'icon--danger';
+
+        const telematicsFaults = (v.activeFaults || []).filter((fault) => isTelematicsFault(fault));
+        if (telematicsFaults.length > 0) {
+            const hasMajorTelematicsFault = telematicsFaults.some((fault) => {
+                const severity = normalizeFaultSeverity(fault.failureMode?.severity);
+                return severity === 'major' || (fault.faultState || '').toLowerCase().includes('active');
+            });
+            return hasMajorTelematicsFault ? 'icon--danger' : 'icon--warning';
+        }
+
+        if (deviceIssues.length > 0) return 'icon--warning';
+        return 'icon--success';
+    };
+
+    const getCameraIconClass = (v: VehicleData): string => {
+        if (!v.cameraStatus) return 'icon--muted';
+        if (v.cameraStatus.health === 'good') return 'icon--success';
+        if (v.cameraStatus.health === 'warning') return 'icon--warning';
+        return 'icon--danger';
+    };
+
     return (
         <div style={style} className="asset-row-container">
             <div
                 className={`asset-table__row ${isExpanded ? 'asset-table__row--expanded' : ''}`}
                 onClick={handleRowClick}
+                onMouseEnter={() => onRowHoverChange?.(vehicle.device.id)}
+                onMouseLeave={() => onRowHoverChange?.(null)}
             >
                 <div className="asset-table__cell col-asset">
                     <span className="chevron-toggle">
-                        {isExpanded ? <ChevronDown size={14} strokeWidth={3} /> : <ChevronRight size={14} strokeWidth={3} />}
+                        {isExpanded ? <IconChevronDown size={14} strokeWidth={3} /> : <IconChevronRight size={14} strokeWidth={3} />}
                     </span>
                     <span className="asset-name">{vehicle.device.name}</span>
                     {vehicle.health.hasRecurringIssues && (
                         <span title="Recurring issue detected">
-                            <RefreshCw size={12} className="recurring-issue-icon" />
+                            <IconRefresh size={12} className="recurring-issue-icon" />
                         </span>
                     )}
-                    <Clipboard className="asset-type-icon" size={12} />
+                    <IconClipboard className="asset-type-icon" size={12} />
                 </div>
                 <div className="asset-table__cell col-model">{vehicle.makeModel || '--'}</div>
                 <div className="asset-table__cell col-driver">{vehicle.driverName || 'No Driver'}</div>
@@ -83,7 +152,7 @@ export const AssetRow = memo(({ data, index, style }: AssetRowProps) => {
                                 <div className="level-bar" style={{ backgroundColor: getLevelColor(Math.min(100, vehicle.fuelLevel)), height: `${Math.min(100, vehicle.fuelLevel)}%` }} />
                             </div>
                         </>
-                    ) : (data.isEnriching ? (
+                    ) : (isEnriching ? (
                         <div className="enrichment-loader">
                             <div className="enrichment-pulse" />
                         </div>
@@ -96,13 +165,13 @@ export const AssetRow = memo(({ data, index, style }: AssetRowProps) => {
                         <>
                             <span className="level-text" style={{ color: getLevelColor(vehicle.stateOfCharge) }}>
                                 {Math.round(vehicle.stateOfCharge)}%
-                                {vehicle.isCharging && <Zap size={12} className="charging-icon" />}
+                                {vehicle.isCharging && <IconBolt size={12} className="charging-icon" />}
                             </span>
                             <div className="level-indicator">
                                 <div className="level-bar" style={{ backgroundColor: getLevelColor(vehicle.stateOfCharge), height: `${vehicle.stateOfCharge}%` }} />
                             </div>
                         </>
-                    ) : (data.isEnriching ? (
+                    ) : (isEnriching ? (
                         <div className="enrichment-loader">
                             <div className="enrichment-pulse" />
                         </div>
@@ -111,28 +180,24 @@ export const AssetRow = memo(({ data, index, style }: AssetRowProps) => {
                     ))}
                 </div>
                 <div className="asset-table__cell col-icons">
-                    <Wifi size={16} className={vehicle.status.isDeviceCommunicating ? 'icon--success' : 'icon--danger'} />
-                    <Battery size={16} className={(vehicle.batteryVoltage ?? 13) > 12.2 ? 'icon--success' : 'icon--danger'} />
-                    <ClipboardCheck size={16} className={!vehicle.hasUnrepairedDefects ? 'icon--success' : 'icon--danger'} />
+                    <span className="status-icon-slot" title="Vehicle fault status">
+                        <IconCar size={16} className={getVehicleFaultIconClass(vehicle)} />
+                    </span>
+                    <span className="status-icon-slot" title={vehicle.hasUnrepairedDefects ? 'Open DVIR defects' : 'No open DVIR defects'}>
+                        <IconClipboardCheck size={16} className={getDvirIconClass(vehicle)} />
+                    </span>
+                    <span className="status-icon-slot" title="Telematics device health">
+                        <IconAntennaBars5 size={16} className={getTelematicsIconClass(vehicle)} />
+                    </span>
                     <span
+                        className="status-icon-slot"
                         title={
                             !vehicle.cameraStatus
                                 ? 'No camera linked'
                                 : `Camera is ${vehicle.cameraStatus.isOnline ? 'Online' : 'Offline'} (${vehicle.cameraStatus.health || 'unknown'})`
                         }
                     >
-                        <Camera
-                            size={16}
-                            className={
-                                !vehicle.cameraStatus
-                                    ? 'icon--muted'
-                                    : vehicle.cameraStatus.health === 'good'
-                                        ? 'icon--success'
-                                        : vehicle.cameraStatus.health === 'warning'
-                                            ? 'icon--warning'
-                                            : 'icon--danger'
-                            }
-                        />
+                        <IconCamera size={16} className={getCameraIconClass(vehicle)} />
                     </span>
                 </div>
                 <div className="asset-table__cell col-dur">
@@ -151,5 +216,8 @@ export const AssetRow = memo(({ data, index, style }: AssetRowProps) => {
     // Custom equality check if needed, or rely on react-window default (which is shallow compare of props)
     // Since we access store inside, standard memo might be tricky if data prop doesn't change but store does.
     // However, using the store selector hook will trigger re-render anyway.
-    return prev.index === next.index && prev.style === next.style && prev.data === next.data;
+    return prev.index === next.index
+        && prev.style === next.style
+        && prev.vehicles === next.vehicles
+        && prev.onRowHoverChange === next.onRowHoverChange;
 });

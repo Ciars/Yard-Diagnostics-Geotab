@@ -17,7 +17,7 @@ interface GeotabWindowApi {
         errorCallback?: (error: Error) => void
     ): void;
     multiCall<T>(
-        calls: ApiCall[],
+        calls: Array<[string, Record<string, unknown>]>,
         callback?: (results: T) => void,
         errorCallback?: (error: Error) => void
     ): void;
@@ -68,18 +68,18 @@ export class ProductionApiAdapter implements IGeotabApi {
      * from crashing the entire data load.
      */
     async multiCall<T extends unknown[]>(calls: ApiCall[]): Promise<T> {
-        // DEBUG: Log exact payload
-        console.log(`[ProductionAPI] SENDING multiCall: ${calls.length} items`, JSON.stringify(calls));
+        // Geotab's native multiCall expects tuple payloads: ["Method", params]
+        const nativeCalls: Array<[string, Record<string, unknown>]> =
+            calls.map((call) => [call.method, call.params]);
 
-        return new Promise((resolve) => {
+        console.log(`[ProductionAPI] SENDING multiCall: ${nativeCalls.length} items`);
+
+        return new Promise((resolve, reject) => {
             this.api.multiCall<T>(
-                calls,
+                nativeCalls,
                 (results) => resolve(results),
                 (error) => {
-                    // Log but don't throw - return empty arrays for failed calls
-                    console.error('[ProductionApiAdapter] multiCall partial failure:', this.normalizeError(error));
-                    // Fallback: return array of empty results matching call count
-                    resolve(calls.map(() => []) as T);
+                    reject(this.normalizeError(error));
                 }
             );
         });

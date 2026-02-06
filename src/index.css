@@ -1,24 +1,69 @@
 :root {
-  /* Zenith Bridge - Mapping our legacy vars to Zenith tokens */
-  --color-primary: var(--backgrounds-primary-brand);
-  --color-accent: var(--action-primary--default);
-  --color-background: var(--backgrounds-content-1);
-  --color-surface: var(--backgrounds-main);
+  /* Typography */
+  --font-sans: var(--main-font, Roboto, "Segoe UI", Segoe, "Helvetica Neue", Helvetica, sans-serif);
+  --font-mono: var(--main-font-data, "Roboto Mono", "Segoe UI", Segoe, "Helvetica Neue", Helvetica, sans-serif);
 
-  --color-text: var(--text-primary);
-  --color-text-muted: var(--text-secondary);
+  /* Zenith-aligned foundation */
+  --brand-700: var(--backgrounds-primary-brand, #25477b);
+  --brand-600: var(--backgrounds-reverse-2, #2f5b9d);
+  --action-primary: var(--action-primary--default, #0078d3);
+  --action-primary-hover: var(--action-primary--hover, #005aa8);
+  --action-primary-active: var(--action-primary--active, #004080);
 
-  --color-success: var(--accents-success--detail);
-  --color-warning: var(--accents-warning--detail);
-  --color-danger: var(--accents-error--detail);
+  --text-primary-app: var(--text-primary, #1f2833);
+  --text-secondary-app: var(--text-secondary, #4e677e);
+  --text-muted-app: var(--text-placeholder, #8da4b9);
+  --text-inverse-app: var(--text-reverse-primary, #ffffff);
 
-  --color-border: var(--borders-general);
+  --surface-main: var(--backgrounds-main, #ffffff);
+  --surface-canvas: var(--backgrounds-content-0, #f9fafb);
+  --surface-subtle: var(--backgrounds-content-1, #f2f5f7);
+  --surface-muted: var(--backgrounds-content-2, #d9e1e8);
+  --surface-hover: var(--backgrounds-hover, #e6ebef);
 
-  /* Spacing Tokens (Zenith uses 8px grid typically, keeping ours aligned) */
+  --border-default: var(--borders-general, #c0ccd8);
+  --border-strong: var(--borders-secondary, #748faa);
+  --border-focus: var(--borders-form-field--active, #0078d3);
+
+  --state-success-bg: var(--accents-success--main, #edfef2);
+  --state-success-fg: var(--accents-success--detail, #2b6436);
+  --state-warning-bg: var(--accents-warning--main, #fef7ed);
+  --state-warning-fg: var(--accents-warning--detail, #59480d);
+  --state-danger-bg: var(--accents-error--main, #ffeceb);
+  --state-danger-fg: var(--accents-error--detail, #a01f0e);
+  --state-info-bg: var(--accents-general--main, #ebf6ff);
+  --state-info-fg: var(--accents-general--detail, #25477b);
+
+  --on-brand-primary: #ffffff;
+  --on-brand-secondary: #c0ccd8;
+  --on-brand-muted: #8da4b9;
+  --on-brand-surface: rgba(255, 255, 255, 0.08);
+  --on-brand-surface-hover: rgba(255, 255, 255, 0.14);
+  --on-brand-surface-active: rgba(255, 255, 255, 0.2);
+
+  /* Legacy semantic aliases used across the app */
+  --color-primary: var(--brand-700);
+  --color-primary-dark: var(--brand-600);
+  --color-accent: var(--action-primary);
+  --color-background: var(--surface-subtle);
+  --color-surface: var(--surface-main);
+  --color-text: var(--text-primary-app);
+  --color-text-primary: var(--text-primary-app);
+  --color-text-secondary: var(--text-secondary-app);
+  --color-text-muted: var(--text-muted-app);
+  --color-success: var(--state-success-fg);
+  --color-warning: var(--state-warning-fg);
+  --color-danger: var(--state-danger-fg);
+  --color-error: var(--state-danger-fg);
+  --color-info: var(--state-info-fg);
+  --color-border: var(--border-default);
+
   --radius-sm: 4px;
-  --radius-md: 4px;
-  /* Zenith tends to be squarer */
-  --radius-lg: 8px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+
+  --shadow-1: 0 1px 3px rgba(31, 40, 51, 0.08);
+  --shadow-2: 0 6px 16px rgba(31, 40, 51, 0.12);
 
   --spacing-xs: 4px;
   --spacing-sm: 8px;
@@ -27,21 +72,47 @@
   --spacing-xl: 32px;
 }
 
-* {
-  margin: 0;
-  padding: 0;
+*,
+*::before,
+*::after {
   box-sizing: border-box;
 }
 
-body {
-  font-family: 'Roboto', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  /* Zenith uses Roboto */
-  background-color: var(--color-background);
-  color: var(--color-text);
-  line-height: 1.6;
-  -webkit-font-smoothing: antialiased;
-}
-
+html,
+body,
 #root {
   min-height: 100vh;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  background-color: var(--color-background);
+  color: var(--color-text);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  margin: 0;
+  color: var(--color-text-primary);
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
 }

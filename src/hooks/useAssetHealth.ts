@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react';
-import type { VehicleData, FaultData, ExceptionEvent } from '@/types/geotab';
+import { useState, useEffect, useCallback } from 'react';
+import type { VehicleData, FaultData, ExceptionEvent, ExtendedDiagnostics } from '@/types/geotab';
 import { useGeotabApi } from '@/hooks/useGeotabApi';
 import { FleetDataService } from '@/services/FleetDataService';
 import { classifyFaults, VehicleFaultSummary } from '@/services/FaultService';
@@ -11,6 +11,7 @@ interface AssetHealthState {
     exceptions: ExceptionEvent[];
     statusData: any[]; // Status logs
     analysis: VehicleFaultSummary | null;
+    extendedDiagnostics?: ExtendedDiagnostics;
 }
 
 export function useAssetHealth(vehicle: VehicleData) {
@@ -21,10 +22,11 @@ export function useAssetHealth(vehicle: VehicleData) {
         faults: [],
         exceptions: [],
         statusData: [],
-        analysis: null
+        analysis: null,
+        extendedDiagnostics: undefined
     });
 
-    const loadHistory = async () => {
+    const loadHistory = useCallback(async () => {
         if (!api) return;
         setState(prev => ({ ...prev, isLoading: true, error: null }));
 
@@ -32,7 +34,7 @@ export function useAssetHealth(vehicle: VehicleData) {
             const service = new FleetDataService(api);
             // console.log(`[useAssetHealth] Fetching deep history for ${vehicle.device.name}...`);
 
-            const { faults, exceptions, statusData } = await service.getAssetHealthDetails(vehicle.device.id);
+            const { faults, exceptions, statusData, extendedDiagnostics } = await service.getAssetHealthDetails(vehicle.device.id);
 
             const analysis = classifyFaults(faults, exceptions);
 
@@ -42,7 +44,8 @@ export function useAssetHealth(vehicle: VehicleData) {
                 faults,
                 exceptions,
                 statusData: statusData || [],
-                analysis
+                analysis,
+                extendedDiagnostics
             });
         } catch (err) {
             console.error('[useAssetHealth] Error:', err);
@@ -53,11 +56,11 @@ export function useAssetHealth(vehicle: VehicleData) {
                 error: `Failed to load detailed history: ${msg}`
             }));
         }
-    };
+    }, [api, vehicle.device.id]);
 
     useEffect(() => {
         loadHistory();
-    }, [vehicle.device.id, api]);
+    }, [loadHistory]);
 
     return { ...state, loadHistory };
 }

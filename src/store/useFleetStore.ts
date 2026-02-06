@@ -8,6 +8,7 @@
 import { create } from 'zustand';
 import { devtools } from 'zustand/middleware';
 import type { Zone, VehicleData, KpiFilterType } from '@/types/geotab';
+import { matchesKpiFilter } from '@/lib/vehicleHealthPredicates';
 
 // =============================================================================
 // State Interface
@@ -228,6 +229,7 @@ export const selectActiveKpiFilter = (state: FleetStore) => state.activeKpiFilte
 export const selectExpandedVehicleId = (state: FleetStore) => state.expandedVehicleId;
 export const selectSidebarCollapsed = (state: FleetStore) => state.sidebarCollapsed;
 export const selectSearchQuery = (state: FleetStore) => state.searchQuery;
+export const selectIsPollingPaused = (state: FleetStore) => state.isPollingPaused;
 
 /**
  * Selector: Get filtered zones based on search query
@@ -255,17 +257,5 @@ export const selectFilteredVehicles = (state: FleetStore) => {
     const { vehicles, activeKpiFilter } = state;
     if (!activeKpiFilter) return vehicles;
 
-    switch (activeKpiFilter) {
-        case 'critical':
-            return vehicles.filter((v) => v.hasCriticalFaults || v.hasUnrepairedDefects);
-        case 'silent':
-            return vehicles.filter((v) => !v.status.isDeviceCommunicating);
-        case 'dormant':
-            return vehicles.filter((v) => (v.dormancyDays ?? 0) >= 14);
-        case 'charging':
-            return vehicles.filter((v) => v.isCharging);
-
-        default:
-            return vehicles;
-    }
+    return vehicles.filter((v) => matchesKpiFilter(v, activeKpiFilter));
 };

@@ -1,4 +1,12 @@
-import { Wifi, Battery, ClipboardCheck, Camera, ArrowUp, ArrowDown } from 'lucide-react';
+import {
+    IconArrowsSort,
+    IconArrowUp,
+    IconArrowDown,
+    IconCar,
+    IconClipboardCheck,
+    IconAntennaBars5,
+    IconCamera
+} from '@tabler/icons-react';
 import type { SortField, SortDirection } from '@/hooks/useVehicleSort';
 
 interface AssetTableHeaderProps {
@@ -9,10 +17,10 @@ interface AssetTableHeaderProps {
 
 export function AssetTableHeader({ sortField, sortDirection, onSort }: AssetTableHeaderProps) {
     const SortIndicator = ({ field }: { field: SortField }) => {
-        if (sortField !== field) return <span className="sort-indicator sort-indicator--inactive">⇅</span>;
+        if (sortField !== field) return <IconArrowsSort size={12} className="sort-indicator sort-indicator--inactive" />;
         return sortDirection === 'asc'
-            ? <ArrowUp size={12} className="sort-indicator" />
-            : <ArrowDown size={12} className="sort-indicator" />;
+            ? <IconArrowUp size={12} className="sort-indicator" />
+            : <IconArrowDown size={12} className="sort-indicator" />;
     };
 
     return (
@@ -33,10 +41,18 @@ export function AssetTableHeader({ sortField, sortDirection, onSort }: AssetTabl
                 SOC <SortIndicator field="soc" />
             </button>
             <div className="asset-table__header-cell col-icons">
-                <Wifi size={14} />
-                <Battery size={14} />
-                <ClipboardCheck size={14} />
-                <Camera size={14} />
+                <span className="status-icon-slot">
+                    <IconCar size={14} className="icon--muted" />
+                </span>
+                <span className="status-icon-slot">
+                    <IconClipboardCheck size={14} className="icon--muted" />
+                </span>
+                <span className="status-icon-slot">
+                    <IconAntennaBars5 size={14} className="icon--muted" />
+                </span>
+                <span className="status-icon-slot">
+                    <IconCamera size={14} className="icon--muted" />
+                </span>
             </div>
             <button className="asset-table__header-cell col-dur sortable" onClick={() => onSort('duration')}>
                 STAY <SortIndicator field="duration" />

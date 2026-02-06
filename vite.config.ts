@@ -5,6 +5,7 @@ import { fileURLToPath } from 'url'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
+const disableHmr = process.env.VITE_DISABLE_HMR === '1'
 
 // https://vite.dev/config/
 export default defineConfig({
@@ -35,7 +36,16 @@ export default defineConfig({
         }
     },
     server: {
-        port: 5173,
-        open: true
+        host: '127.0.0.1',
+        port: 5176,
+        strictPort: true,
+        open: true,
+        hmr: disableHmr
+            ? false
+            : {
+                host: '127.0.0.1',
+                port: 5176,
+                protocol: 'ws'
+            }
     }
 })

@@ -18,6 +18,7 @@ describe('FleetDataService.calculateKpis', () => {
             silent: 0,
             dormant: 0,
             charging: 0,
+            camera: 0,
         });
     });
 
@@ -31,6 +32,17 @@ describe('FleetDataService.calculateKpis', () => {
         const kpis = FleetDataService.calculateKpis(vehicles);
 
         expect(kpis.critical).toBe(2);
+    });
+
+    it('should count low battery vehicles as critical', () => {
+        const vehicles: VehicleData[] = [
+            createMockVehicle({ batteryVoltage: 11.7 }),
+            createMockVehicle({ batteryVoltage: 12.4 }),
+        ];
+
+        const kpis = FleetDataService.calculateKpis(vehicles);
+
+        expect(kpis.critical).toBe(1);
     });
 
     it('should count vehicles with unrepaired defects as critical', () => {
@@ -72,11 +84,11 @@ describe('FleetDataService.calculateKpis', () => {
         expect(kpis.silent).toBe(1);
     });
 
-    it('should count dormant vehicles (>= 7 days)', () => {
+    it('should count dormant vehicles (>= 14 days)', () => {
         const vehicles: VehicleData[] = [
+            createMockVehicle({ dormancyDays: 20 }),
+            createMockVehicle({ dormancyDays: 14 }), // Exactly 14 = dormant
             createMockVehicle({ dormancyDays: 10 }),
-            createMockVehicle({ dormancyDays: 7 }), // Exactly 7 = dormant
-            createMockVehicle({ dormancyDays: 6 }),
             createMockVehicle({ dormancyDays: undefined }), // Missing data
         ];
 
@@ -97,13 +109,28 @@ describe('FleetDataService.calculateKpis', () => {
         expect(kpis.charging).toBe(2);
     });
 
+    it('should count vehicles with camera issues', () => {
+        const vehicles: VehicleData[] = [
+            createMockVehicle({ cameraHealth: 'critical' }),
+            createMockVehicle({ cameraHealth: 'warning' }),
+            createMockVehicle({ cameraHealth: 'offline' }),
+            createMockVehicle({ cameraHealth: 'good' }),
+            createMockVehicle({ cameraHealth: undefined }),
+        ];
+
+        const kpis = FleetDataService.calculateKpis(vehicles);
+
+        expect(kpis.camera).toBe(3);
+    });
+
     it('should handle vehicles with multiple KPI flags', () => {
         const vehicles: VehicleData[] = [
             createMockVehicle({
                 hasCriticalFaults: true,
                 isDeviceCommunicating: false,
-                dormancyDays: 10,
-                isCharging: false
+                dormancyDays: 20,
+                isCharging: false,
+                cameraHealth: 'critical'
             }),
         ];
 
@@ -113,6 +140,7 @@ describe('FleetDataService.calculateKpis', () => {
         expect(kpis.silent).toBe(1);
         expect(kpis.dormant).toBe(1);
         expect(kpis.charging).toBe(0);
+        expect(kpis.camera).toBe(1);
     });
 });
 
@@ -124,6 +152,8 @@ function createMockVehicle(overrides: Partial<{
     statusDateTime: Date;
     dormancyDays: number | undefined;
     isCharging: boolean;
+    batteryVoltage: number | undefined;
+    cameraHealth: 'good' | 'warning' | 'critical' | 'offline' | undefined;
 }> = {}): VehicleData {
     const now = new Date();
 
@@ -133,9 +163,6 @@ function createMockVehicle(overrides: Partial<{
             name: 'Test Vehicle',
             serialNumber: '123456',
             vehicleIdentificationNumber: 'VIN123',
-            deviceType: { id: 'GO9', name: 'GO9' },
-            groups: [],
-            comments: '',
         },
         status: {
             device: { id: 'device-1' },
@@ -145,21 +172,31 @@ function createMockVehicle(overrides: Partial<{
             bearing: 0,
             speed: 0,
             isDeviceCommunicating: overrides.isDeviceCommunicating ?? true,
+            currentStateDuration: 'PT0S',
         },
-        driver: null,
-        make: 'TestMake',
-        model: 'TestModel',
-        year: 2023,
-        diagnostics: {
-            fuelLevel: 0,
-            stateOfCharge: 0,
-            batteryVoltage: 0,
-            currentDriver: null,
-        },
+        driverName: 'No Driver',
+        makeModel: 'TestMake TestModel',
         hasCriticalFaults: overrides.hasCriticalFaults ?? false,
         hasUnrepairedDefects: overrides.hasUnrepairedDefects ?? false,
-        dormancyDays: overrides.dormancyDays,
-        stayDuration: null,
+        batteryVoltage: overrides.batteryVoltage,
+        dormancyDays: overrides.dormancyDays ?? 0,
+        zoneDurationMs: 0,
         isCharging: overrides.isCharging ?? false,
+        cameraStatus: overrides.cameraHealth ? {
+            isOnline: overrides.cameraHealth !== 'offline',
+            health: overrides.cameraHealth,
+            lastHeartbeat: now.toISOString(),
+            deviceId: 'camera-1',
+            name: 'Test Camera'
+        } : undefined,
+        health: {
+            dvir: { defects: [], isClean: true },
+            issues: [],
+            faultAnalysis: { items: [], ongoingCount: 0, severeCount: 0, historicalCount: 0 },
+            hasRecurringIssues: false,
+            isDeviceOffline: overrides.isDeviceCommunicating === false,
+            lastHeartbeat: now.toISOString(),
+        },
+        activeFaults: [],
     };
 }

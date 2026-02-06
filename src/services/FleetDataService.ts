@@ -14,25 +14,19 @@ import type {
     ExceptionEvent
 } from '@/types/geotab';
 import { isPointInPolygon, getPolygonBoundingBox } from '@/lib/geoUtils';
+import { calculateVehicleKpis, hoursSince } from '@/lib/vehicleHealthPredicates';
+import { isTelematicsFault } from './FaultService';
 import { VinDecoderService } from './VinDecoderService';
 import { apiCache, CacheTTL } from '@/lib/apiCache';
 
-// Constants
-const DORMANCY_THRESHOLD_DAYS = 7;     // 7 days
-
 // Helper to calculate bounding box for a polygon (fast pre-filter for zone checks)
-
-// Helper for 'Hours Since'
-const SILENT_THRESHOLD_HOURS = 24; // 24 hours (Matches tests and business logic)
-const hoursSince = (isoDate: string) => {
-    const ms = Date.now() - new Date(isoDate).getTime();
-    return ms / (1000 * 60 * 60);
-};
 
 // Helper for 'Days Since'
 const daysSince = (isoDate: string) => {
     return hoursSince(isoDate) / 24;
 };
+
+const VERBOSE_FLEET_LOGS = import.meta.env.DEV && import.meta.env.VITE_VERBOSE_FLEET_LOGS === '1';
 
 // Helper: Parse ISO Duration or TimeSpan
 function parseDuration(duration: string): number {
@@ -74,10 +68,140 @@ export class FleetDataService {
     // Prevents duplicate API calls when getFleetData and getZoneVehicleCounts are called together
     private _statusCache: DeviceStatusInfo[] | null = null;
     private _statusCacheTime: number = 0;
+    private _statusFetchPromise: Promise<DeviceStatusInfo[]> | null = null;
     private readonly STATUS_CACHE_TTL_MS = 30_000; // 30 seconds
+    private static _sharedStatusCache: DeviceStatusInfo[] | null = null;
+    private static _sharedStatusCacheTime: number = 0;
+    private static _sharedStatusFetchPromise: Promise<DeviceStatusInfo[]> | null = null;
+
+    // Device snapshot cache to avoid per-device Get calls (quota heavy in DevAuthShim)
+    private _deviceCache: Device[] | null = null;
+    private _deviceCacheTime: number = 0;
+    private _deviceFetchPromise: Promise<Device[]> | null = null;
+    private readonly DEVICE_CACHE_TTL_MS = 5 * 60_000; // 5 minutes
+    private static _sharedDeviceCache: Device[] | null = null;
+    private static _sharedDeviceCacheTime: number = 0;
+    private static _sharedDeviceFetchPromise: Promise<Device[]> | null = null;
 
     constructor(api: IGeotabApi) {
         this.api = api;
+    }
+
+    private isStatusCacheFresh(timestamp: number): boolean {
+        return (Date.now() - timestamp) < this.STATUS_CACHE_TTL_MS;
+    }
+
+    private cacheStatuses(statuses: DeviceStatusInfo[]): void {
+        const now = Date.now();
+        this._statusCache = statuses;
+        this._statusCacheTime = now;
+        FleetDataService._sharedStatusCache = statuses;
+        FleetDataService._sharedStatusCacheTime = now;
+    }
+
+    private async getAllStatuses(): Promise<DeviceStatusInfo[]> {
+        if (this._statusCache && this.isStatusCacheFresh(this._statusCacheTime)) {
+            return this._statusCache;
+        }
+
+        if (
+            FleetDataService._sharedStatusCache &&
+            this.isStatusCacheFresh(FleetDataService._sharedStatusCacheTime)
+        ) {
+            this._statusCache = FleetDataService._sharedStatusCache;
+            this._statusCacheTime = FleetDataService._sharedStatusCacheTime;
+            return FleetDataService._sharedStatusCache;
+        }
+
+        if (this._statusFetchPromise) {
+            return this._statusFetchPromise;
+        }
+
+        if (FleetDataService._sharedStatusFetchPromise) {
+            const sharedStatuses = await FleetDataService._sharedStatusFetchPromise;
+            this.cacheStatuses(sharedStatuses);
+            return sharedStatuses;
+        }
+
+        const fetchPromise = this.api.call<DeviceStatusInfo[]>('Get', {
+            typeName: 'DeviceStatusInfo',
+            search: {},
+            resultsLimit: 50000
+        });
+
+        this._statusFetchPromise = fetchPromise;
+        FleetDataService._sharedStatusFetchPromise = fetchPromise;
+
+        try {
+            const statuses = await fetchPromise;
+            this.cacheStatuses(statuses);
+            return statuses;
+        } finally {
+            this._statusFetchPromise = null;
+            FleetDataService._sharedStatusFetchPromise = null;
+        }
+    }
+
+    private isDeviceCacheFresh(timestamp: number): boolean {
+        return (Date.now() - timestamp) < this.DEVICE_CACHE_TTL_MS;
+    }
+
+    private cacheDevices(devices: Device[]): void {
+        const now = Date.now();
+        this._deviceCache = devices;
+        this._deviceCacheTime = now;
+        FleetDataService._sharedDeviceCache = devices;
+        FleetDataService._sharedDeviceCacheTime = now;
+    }
+
+    private async getAllDevices(): Promise<Device[]> {
+        if (this._deviceCache && this.isDeviceCacheFresh(this._deviceCacheTime)) {
+            return this._deviceCache;
+        }
+
+        if (
+            FleetDataService._sharedDeviceCache &&
+            this.isDeviceCacheFresh(FleetDataService._sharedDeviceCacheTime)
+        ) {
+            this._deviceCache = FleetDataService._sharedDeviceCache;
+            this._deviceCacheTime = FleetDataService._sharedDeviceCacheTime;
+            return FleetDataService._sharedDeviceCache;
+        }
+
+        if (this._deviceFetchPromise) {
+            return this._deviceFetchPromise;
+        }
+
+        if (FleetDataService._sharedDeviceFetchPromise) {
+            const sharedDevices = await FleetDataService._sharedDeviceFetchPromise;
+            this.cacheDevices(sharedDevices);
+            return sharedDevices;
+        }
+
+        const fetchPromise = this.api.call<Device[]>('Get', {
+            typeName: 'Device',
+            resultsLimit: 50000
+        });
+
+        this._deviceFetchPromise = fetchPromise;
+        FleetDataService._sharedDeviceFetchPromise = fetchPromise;
+
+        try {
+            const devices = await fetchPromise;
+            this.cacheDevices(devices);
+            return devices;
+        } finally {
+            this._deviceFetchPromise = null;
+            FleetDataService._sharedDeviceFetchPromise = null;
+        }
+    }
+
+    private mapVideoDeviceHealthToCameraHealth(value: unknown): 'good' | 'warning' | 'critical' | undefined {
+        if (typeof value !== 'number') return undefined;
+        if (value === 0) return 'good';
+        if (value === 1 || value === 2) return 'warning';
+        if (value === 3) return 'critical';
+        return undefined;
     }
 
     /**
@@ -86,15 +210,9 @@ export class FleetDataService {
     async getFleetData(): Promise<VehicleData[]> {
         // 1. Core Lists (Global Fetch)
         // We get the current snapshot of the entire fleet.
-        const deviceCall = this.api.call<Device[]>('Get', {
-            typeName: 'Device',
-            resultsLimit: 50000
-        });
+        const deviceCall = this.getAllDevices();
 
-        const statusCall = this.api.call<DeviceStatusInfo[]>('Get', {
-            typeName: 'DeviceStatusInfo',
-            resultsLimit: 50000
-        });
+        const statusCall = this.getAllStatuses();
 
         const driverCall = this.api.call<User[]>('Get', {
             typeName: 'User',
@@ -118,8 +236,8 @@ export class FleetDataService {
             ]);
 
             // Cache statuses for getZoneVehicleCounts to reuse
-            this._statusCache = statuses;
-            this._statusCacheTime = Date.now();
+            this.cacheStatuses(statuses);
+            this.cacheDevices(devices);
 
             // 2. "Silent Asset" Optimization
             // Goal: Avoid making 4,500+ API calls for data we already have.
@@ -176,10 +294,18 @@ export class FleetDataService {
      * Strategy: "Production-Hardened" MultiCall (Seq=1, Limit=1)
      * Used mainly for "Silent" assets that are missing data in the global snapshot.
      */
-    async fetchVehicleDiagnostics(devices: Device[]) {
+    async fetchVehicleDiagnostics(
+        devices: Device[],
+        options?: {
+            diagnosticIds?: string[];
+            lookbackDays?: number;
+            callsPerBatch?: number;
+            delayMs?: number;
+        }
+    ) {
         if (devices.length === 0) return [];
 
-        const diagIds = [
+        const diagIds = options?.diagnosticIds ?? [
             DiagnosticIds.FUEL_LEVEL,
             DiagnosticIds.STATE_OF_CHARGE,
             DiagnosticIds.CHARGING_STATE,
@@ -192,12 +318,12 @@ export class FleetDataService {
         ];
 
         // CONFIGURATION: Production Hardened
-        const CALLS_PER_BATCH = 90;      // Max 100 recommended. 90 is safe.
-        const RESULTS_LIMIT = 1;         // Latest snapshot only.
+        const CALLS_PER_BATCH = options?.callsPerBatch ?? 90; // Max 100 recommended. 90 is safe.
+        const RESULTS_LIMIT = 1;                               // Latest snapshot only.
         // Note: Sequential processing via for-loop. Parallel risks undefined exceptions.
-        const DELAY_MS = 100;            // Polite 10 batches/sec
+        const DELAY_MS = options?.delayMs ?? 100;              // Polite 10 batches/sec
 
-        const LOOKBACK_DAYS = 7;
+        const LOOKBACK_DAYS = options?.lookbackDays ?? 7;
         const fromDate = new Date(Date.now() - LOOKBACK_DAYS * 24 * 60 * 60 * 1000).toISOString();
 
         const allResults: StatusData[] = [];
@@ -224,7 +350,9 @@ export class FleetDataService {
 
             try {
                 // Use generic 'any' to avoid TS noise
-                console.log(`[FleetDataService] Processing Batch ${Math.floor(i / CALLS_PER_BATCH) + 1}/${Math.floor(allCalls.length / CALLS_PER_BATCH) + 1}`);
+                if (VERBOSE_FLEET_LOGS) {
+                    console.debug(`[FleetDataService] Processing Batch ${Math.floor(i / CALLS_PER_BATCH) + 1}/${Math.floor(allCalls.length / CALLS_PER_BATCH) + 1}`);
+                }
                 const batchResults = await this.api.multiCall<any[]>(chunk);
 
                 const validResults = batchResults.flat().filter((r: any) => r && r.device);
@@ -341,10 +469,13 @@ export class FleetDataService {
             const fuelLevel = getDiagnosticValue(d.id, s, DiagnosticIds.FUEL_LEVEL);
             const soc = getDiagnosticValue(d.id, s, DiagnosticIds.STATE_OF_CHARGE);
             const chargingState = getDiagnosticValue(d.id, s, DiagnosticIds.CHARGING_STATE);
+            const acInputPower = getDiagnosticValue(d.id, s, DiagnosticIds.AC_INPUT_POWER);
 
             // Charging Logic
             let isCharging = false;
-            if (chargingState && chargingState > 0) isCharging = true; // Works for boolean 1/0 or number
+            if (typeof chargingState === 'number' && chargingState > 0) isCharging = true;
+            // Fallback for EVs where charging-state diagnostic is sparse but charger power is present.
+            if (!isCharging && typeof acInputPower === 'number' && acInputPower > 0) isCharging = true;
 
             // Find linked camera
             const camera = cameras.find(c => {
@@ -367,8 +498,8 @@ export class FleetDataService {
                 const getDiag = (id: string) => getDiagnosticValue(d.id, s, id);
 
                 const healthVal = getDiag(DiagnosticIds.VIDEO_DEVICE_HEALTH);
-                const roadVal = getDiag(DiagnosticIds.CAMERA_STATUS_ROAD);
                 const onlineVal = getDiag(DiagnosticIds.CAMERA_ONLINE);
+                const mappedHealth = this.mapVideoDeviceHealthToCameraHealth(healthVal);
 
                 // Online/Offline check first
                 if (onlineVal !== undefined && onlineVal === 0) {
@@ -376,12 +507,9 @@ export class FleetDataService {
                 } else if (camStatus && !camStatus.isDeviceCommunicating) {
                     if (camera) camHealth = 'offline';
                 } else {
-                    // Critical health states
-                    if (healthVal === 2 || healthVal === 3) camHealth = 'critical';
-                    else if (roadVal === 0 || roadVal === 4) camHealth = 'critical';
-                    // Warning health states
-                    else if (healthVal === 1) camHealth = 'warning';
-                    else if (roadVal === 1 || roadVal === 3) camHealth = 'warning';
+                    // Summary health for list/KPI is based on Video Device Health.
+                    // Road cam state (e.g., decalibrated) is still shown in detailed logs.
+                    camHealth = mappedHealth ?? 'good';
                 }
             }
 
@@ -443,7 +571,12 @@ export class FleetDataService {
                         const elapsedSinceLog = Date.now() - new Date(s.dateTime).getTime();
                         if (elapsedSinceLog > 0) duration += elapsedSinceLog;
                     }
-                    v.zoneDurationMs = duration;
+                    const safeDuration = Math.max(0, duration);
+                    v.zoneDurationMs = safeDuration;
+                    if (safeDuration > 0) {
+                        v.zoneEntryTime = new Date(Date.now() - safeDuration).toISOString();
+                        v.isZoneEntryEstimate = true;
+                    }
                 }
 
                 // Dormancy
@@ -456,7 +589,7 @@ export class FleetDataService {
             const v = vehicleMap.get(f.device.id);
             if (v) {
                 v.activeFaults.push(f);
-                if (f.controller && f.controller.name !== 'Telematics Device') {
+                if (!isTelematicsFault(f)) {
                     v.hasCriticalFaults = true;
                     v.health.hasRecurringIssues = true;
                 }
@@ -469,6 +602,58 @@ export class FleetDataService {
         // This fixes race condition where Make/Model appeared blank on first render
 
         return vehicles;
+    }
+
+    /**
+     * Extract the latest value for a specific diagnostic from StatusData array
+     */
+    private getLatestDiagnosticValue(statusData: StatusData[], diagnosticId: string): number | undefined {
+        const readings = statusData.filter(sd => {
+            const id = typeof sd.diagnostic === 'string' ? sd.diagnostic : sd.diagnostic.id;
+            return id === diagnosticId;
+        });
+
+        if (readings.length === 0) return undefined;
+
+        // Sort by dateTime descending, take latest
+        const latest = readings.sort((a, b) =>
+            new Date(b.dateTime).getTime() - new Date(a.dateTime).getTime()
+        )[0];
+
+        return latest.data;
+    }
+
+    /**
+     * Calculate Electrical System Rating (ESR) based on battery voltage health
+     * Algorithm:
+     * - Good (>12.5V) = 90-100%
+     * - Marginal (12-12.5V) = 50-89%
+     * - Poor (<12V) = 0-49%
+     */
+    private calculateESR(statusData: StatusData[]): number {
+        const voltageReadings = statusData
+            .filter(sd => {
+                const id = typeof sd.diagnostic === 'string' ? sd.diagnostic : sd.diagnostic.id;
+                return id === DiagnosticIds.BATTERY_VOLTAGE;
+            })
+            .slice(-20); // Last 20 readings for averaging
+
+        if (voltageReadings.length === 0) return 100; // Default healthy if no data
+
+        const voltages = voltageReadings.map(r => r.data);
+        const avgVoltage = voltages.reduce((a, b) => a + b, 0) / voltages.length;
+
+        // Scoring algorithm
+        if (avgVoltage >= 12.5) {
+            // Excellent: 90-100%
+            return Math.min(100, Math.round(90 + (avgVoltage - 12.5) * 20));
+        }
+        if (avgVoltage >= 12.0) {
+            // Marginal: 50-89%
+            return Math.round(50 + (avgVoltage - 12.0) / 0.5 * 39);
+        }
+        // Poor: 0-49%
+        return Math.max(0, Math.round(avgVoltage / 12 * 50));
     }
 
     private async enrichVehicleMetadata(vehicles: VehicleData[]) {
@@ -565,76 +750,147 @@ export class FleetDataService {
                 console.warn(`[getVehicleDataForZone] Zone not found or has no points: ${zoneId}`);
                 return [];
             }
+            const zonePoints = targetZone.points;
 
             console.log(`[getVehicleDataForZone] Zone found: ${targetZone.name}, fetching lightweight data...`);
 
-            // TASK 1: FAST PATH - Only fetch essential data (Device + Status)
-            // Drivers and faults will be fetched in enrichment phase if needed
             const fetchStart = Date.now();
-            const [devices, statuses] = await Promise.all([
-                this.api.call<Device[]>('Get', {
-                    typeName: 'Device',
-                    resultsLimit: 50000
-                }),
-                this.api.call<DeviceStatusInfo[]>('Get', {
+            let zoneStatuses: DeviceStatusInfo[] = [];
+            const filterStatusesToZone = (statuses: DeviceStatusInfo[]): DeviceStatusInfo[] => {
+                const bbox = getPolygonBoundingBox(zonePoints);
+                return statuses.filter((s) => {
+                    const lat = s.latitude;
+                    const lng = s.longitude;
+
+                    if (!Number.isFinite(lat) || !Number.isFinite(lng)) return false;
+                    if (lat < bbox.minLat || lat > bbox.maxLat || lng < bbox.minLng || lng > bbox.maxLng) {
+                        return false;
+                    }
+
+                    const point = { x: lng, y: lat };
+                    return isPointInPolygon(point, zonePoints);
+                });
+            };
+
+            try {
+                zoneStatuses = await this.api.call<DeviceStatusInfo[]>('Get', {
                     typeName: 'DeviceStatusInfo',
-                    search: {},
+                    search: {
+                        currentZoneSearch: { id: zoneId }
+                    },
                     resultsLimit: 50000
-                })
-            ]);
+                });
+            } catch (e) {
+                console.warn('[getVehicleDataForZone] currentZoneSearch failed, falling back to polygon filter:', e);
+            }
+
+            // Always verify server-side filter with local geometry.
+            if (zoneStatuses.length > 0) {
+                const beforeFilter = zoneStatuses.length;
+                zoneStatuses = filterStatusesToZone(zoneStatuses);
+                if (beforeFilter > zoneStatuses.length * 2) {
+                    console.warn('[getVehicleDataForZone] currentZoneSearch appears broad; local polygon filter applied', {
+                        before: beforeFilter,
+                        after: zoneStatuses.length
+                    });
+                }
+            } else {
+                // Fallback path: if server-side currentZone index has no hits, do client-side polygon filtering.
+                const allStatuses = await this.getAllStatuses();
+                zoneStatuses = filterStatusesToZone(allStatuses);
+            }
+
+            const zoneDeviceIds = zoneStatuses.map((s) => s.device.id);
+            let allDevices: Device[] = [];
+            try {
+                allDevices = await this.getAllDevices();
+            } catch (e) {
+                console.warn('[getVehicleDataForZone] Device snapshot fetch failed, using status-only fallback:', e);
+            }
+            const zoneDeviceIdSet = new Set(zoneDeviceIds);
+            const devices = allDevices.filter((d) => zoneDeviceIdSet.has(d.id));
 
             console.log(`[getVehicleDataForZone] Fast fetch completed in ${Date.now() - fetchStart}ms:`, {
-                devices: devices.length,
-                statuses: statuses.length
+                zoneStatuses: zoneStatuses.length,
+                zoneDevices: devices.length
             });
 
-            // Cache statuses for other methods to reuse
-            this._statusCache = statuses;
-            this._statusCacheTime = Date.now();
+            // Ensure we always have a device object for each zone status, even if Device lookup partially fails.
+            const deviceById = new Map(devices.map((d) => [d.id, d]));
+            const zoneDevices = zoneStatuses.map((status) => {
+                const existing = deviceById.get(status.device.id);
+                if (existing) return existing;
+                return {
+                    id: status.device.id,
+                    name: status.device.name || status.device.id,
+                    serialNumber: ''
+                } as Device;
+            });
 
-            // STEP 2: Filter to zone using bounding box optimization - FAST
-            const filterStart = Date.now();
-            const bbox = getPolygonBoundingBox(targetZone.points);
             const statusMap = new Map<string, DeviceStatusInfo>();
-            statuses.forEach(s => statusMap.set(s.device.id, s));
+            zoneStatuses.forEach((s) => statusMap.set(s.device.id, s));
 
-            const candidateStatuses = statuses.filter(s => {
-                const lat = s.latitude;
-                const lng = s.longitude;
-                return lat >= bbox.minLat && lat <= bbox.maxLat &&
-                    lng >= bbox.minLng && lng <= bbox.maxLng;
+            const missingVitalsDevices = zoneDevices.filter((device) => {
+                const status = statusMap.get(device.id);
+                if (!status?.statusData) return true;
+                const hasFuel = status.statusData.some((sd) => {
+                    const diagnosticId = typeof sd.diagnostic === 'string' ? sd.diagnostic : sd.diagnostic.id;
+                    return diagnosticId === DiagnosticIds.FUEL_LEVEL;
+                });
+                const hasSoc = status.statusData.some((sd) => {
+                    const diagnosticId = typeof sd.diagnostic === 'string' ? sd.diagnostic : sd.diagnostic.id;
+                    return diagnosticId === DiagnosticIds.STATE_OF_CHARGE;
+                });
+                return !hasFuel && !hasSoc;
             });
 
-            // Precise polygon check
-            const zoneStatuses = candidateStatuses.filter(s => {
-                const point = { x: s.longitude, y: s.latitude };
-                return isPointInPolygon(point, targetZone.points);
+            const MAX_ZONE_PATCH_DEVICES = 150;
+            const missingVitalsSorted = [...missingVitalsDevices].sort((a, b) => {
+                const aTime = new Date(statusMap.get(a.id)?.dateTime || 0).getTime();
+                const bTime = new Date(statusMap.get(b.id)?.dateTime || 0).getTime();
+                return bTime - aTime;
+            });
+            const missingVitalsSubset = missingVitalsSorted.slice(0, MAX_ZONE_PATCH_DEVICES);
+            if (missingVitalsDevices.length > MAX_ZONE_PATCH_DEVICES && VERBOSE_FLEET_LOGS) {
+                console.debug('[getVehicleDataForZone] Limiting fallback diagnostics for performance', {
+                    requested: missingVitalsDevices.length,
+                    using: missingVitalsSubset.length
+                });
+            }
+
+            // Camera diagnostics are fetched for all in-zone devices so camera detection remains accurate.
+            const cameraDiagnostics = await this.fetchVehicleDiagnostics(zoneDevices, {
+                diagnosticIds: [
+                    DiagnosticIds.CAMERA_ONLINE,
+                    DiagnosticIds.VIDEO_DEVICE_HEALTH,
+                    DiagnosticIds.CAMERA_STATUS_ROAD,
+                    DiagnosticIds.CAMERA_STATUS_DRIVER,
+                    DiagnosticIds.CAMERA_VIBRATION,
+                    DiagnosticIds.CAMERA_SEATBELT,
+                    DiagnosticIds.CHARGING_STATE,
+                    DiagnosticIds.AC_INPUT_POWER
+                ],
+                lookbackDays: 3,
+                callsPerBatch: 60,
+                delayMs: 120
             });
 
-            // Get only devices in zone
-            const zoneDeviceIds = new Set(zoneStatuses.map(s => s.device.id));
-            const zoneDevices = devices.filter(d => zoneDeviceIds.has(d.id));
-
-            console.log(`[getVehicleDataForZone] Zone filtering completed in ${Date.now() - filterStart}ms:`, {
-                candidates: candidateStatuses.length,
-                inZone: zoneStatuses.length,
-                zoneDevices: zoneDevices.length
+            const vitalsDiagnostics = await this.fetchVehicleDiagnostics(missingVitalsSubset, {
+                diagnosticIds: [
+                    DiagnosticIds.FUEL_LEVEL,
+                    DiagnosticIds.STATE_OF_CHARGE,
+                    DiagnosticIds.CHARGING_STATE
+                ],
+                lookbackDays: 3,
+                callsPerBatch: 60,
+                delayMs: 120
             });
+            const silentDiagnostics = [...cameraDiagnostics, ...vitalsDiagnostics];
 
-            // TASK 6 FIX: Skip diagnostic fetch entirely - use statusData snapshots only
-            // The multiCall for diagnostics fails with GenericException in production.
-            // DeviceStatusInfo.statusData already contains fuel/SOC snapshots for active vehicles.
-            // Trade-off: Slightly less fresh data (acceptable for yard monitoring).
-            const silentDiagnostics: StatusData[] = [];
-
-            // STEP 4: Merge and return
             const mergeStart = Date.now();
-            // Pass empty arrays for drivers/faults - will be enriched later if needed
             const result = this.mergeData(zoneDevices, zoneStatuses, [], [], silentDiagnostics);
             console.log(`[getVehicleDataForZone] Merge completed in ${Date.now() - mergeStart}ms, ${result.length} vehicles`);
 
-            // TASK 4: VIN Decoding - non-blocking background call
-            // Don't await - let the UI render immediately while VIN data populates
             this.enrichVehicleMetadata(result).then(() => {
                 console.log(`[getVehicleDataForZone] VIN enrichment completed (background)`);
             }).catch(err => {
@@ -653,19 +909,7 @@ export class FleetDataService {
      * Calculate KPI counts from vehicle data
      */
     static calculateKpis(vehicles: VehicleData[]) {
-        return {
-            critical: vehicles.filter(
-                (v) => v.hasCriticalFaults || v.hasUnrepairedDefects
-            ).length,
-            silent: vehicles.filter(
-                (v) => !v.status.isDeviceCommunicating ||
-                    hoursSince(v.status.dateTime) > SILENT_THRESHOLD_HOURS
-            ).length,
-            dormant: vehicles.filter(
-                (v) => (v.dormancyDays ?? 0) >= DORMANCY_THRESHOLD_DAYS
-            ).length,
-            charging: vehicles.filter((v) => v.isCharging).length,
-        };
+        return calculateVehicleKpis(vehicles);
     }
 
     /**
@@ -673,24 +917,36 @@ export class FleetDataService {
      * Uses cached statuses if available (from getFleetData) to prevent duplicate API calls
      */
     async getZoneVehicleCounts(zones: Zone[]): Promise<Record<string, number>> {
-        // Use cached statuses if available and not stale
-        const isCacheValid = this._statusCache &&
-            (Date.now() - this._statusCacheTime) < this.STATUS_CACHE_TTL_MS;
-
-        const allStatuses = isCacheValid
-            ? this._statusCache!
-            : await this.api.call<DeviceStatusInfo[]>('Get', {
-                typeName: 'DeviceStatusInfo',
-                search: {},
-                resultsLimit: 50000
-            });
+        const allStatuses = await this.getAllStatuses();
 
         const counts: Record<string, number> = {};
-        zones.forEach(z => counts[z.id] = 0);
+        zones.forEach((z) => {
+            counts[z.id] = 0;
+        });
+
+        const zoneGeometries = zones.map((zone) => ({
+            id: zone.id,
+            points: zone.points,
+            bbox: getPolygonBoundingBox(zone.points ?? [])
+        }));
 
         for (const status of allStatuses) {
+            const lat = status.latitude;
+            const lng = status.longitude;
+
+            if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+
             const point = { x: status.longitude, y: status.latitude };
-            for (const zone of zones) {
+            for (const zone of zoneGeometries) {
+                if (
+                    lat < zone.bbox.minLat ||
+                    lat > zone.bbox.maxLat ||
+                    lng < zone.bbox.minLng ||
+                    lng > zone.bbox.maxLng
+                ) {
+                    continue;
+                }
+
                 if (isPointInPolygon(point, zone.points)) {
                     counts[zone.id]++;
                     break;
@@ -703,11 +959,11 @@ export class FleetDataService {
 
     /**
      * Fetch deep health history for a specific asset (On-Demand)
-     * Fetches 12 months of Faults and Exceptions to catch long-standing issues.
+     * Fetches 3 months of Faults and Exceptions for actionable diagnostics.
      */
     async getAssetHealthDetails(deviceId: string) {
-        // Window: 12 Months
-        const fromDate = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString();
+        // Window: 3 Months
+        const fromDate = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
 
         // 1. FaultData (Raw DTCs)
         const faultCall = this.api.call<FaultData[]>('Get', {
@@ -735,6 +991,10 @@ export class FleetDataService {
             'DiagnosticFuelLevelId',
             'DiagnosticStateOfChargeId',
             'DiagnosticOdometerId',
+            DiagnosticIds.ENGINE_HOURS,
+            DiagnosticIds.DEF_LEVEL,
+            DiagnosticIds.COOLANT_TEMP,
+            DiagnosticIds.ENGINE_SPEED,
             'DiagnosticDeviceUnpluggedId',
             // Camera Specifics
             DiagnosticIds.CAMERA_STATUS_ROAD,
@@ -792,11 +1052,144 @@ export class FleetDataService {
             console.error('[FleetDataService] This should not happen due to fetchSafe, but catching just in case', e);
         }
 
+        // --- ENRICHMENT STEP: Fetch Diagnostic Names ---
+        const diagnosticIds = new Set<string>();
+        faults.forEach(f => {
+            if (f.diagnostic?.id) diagnosticIds.add(f.diagnostic.id);
+        });
+        exceptions.forEach(ex => {
+            if (ex.diagnostic?.id) diagnosticIds.add(ex.diagnostic.id);
+        });
+
+        if (diagnosticIds.size > 0) {
+            try {
+                const diagnostics: any[] = [];
+                const diagnosticCalls = Array.from(diagnosticIds).map((id) => ({
+                    method: 'Get',
+                    params: {
+                        typeName: 'Diagnostic',
+                        search: { id }
+                    }
+                }));
+
+                const CALLS_PER_BATCH = 25;
+                for (let i = 0; i < diagnosticCalls.length; i += CALLS_PER_BATCH) {
+                    const chunk = diagnosticCalls.slice(i, i + CALLS_PER_BATCH);
+                    const batch = await this.api.multiCall<any[]>(chunk);
+                    batch.forEach((entry) => {
+                        if (Array.isArray(entry)) {
+                            diagnostics.push(...entry);
+                        } else if (entry && typeof entry === 'object') {
+                            diagnostics.push(entry);
+                        }
+                    });
+                }
+
+                const diagMap = new Map<string, any>();
+                diagnostics.forEach(d => diagMap.set(d.id, d));
+
+                // Map results back to objects
+                faults.forEach(f => {
+                    if (f.diagnostic?.id && diagMap.has(f.diagnostic.id)) {
+                        f.diagnostic = diagMap.get(f.diagnostic.id);
+                    }
+                });
+                exceptions.forEach(ex => {
+                    if (ex.diagnostic?.id && diagMap.has(ex.diagnostic.id)) {
+                        ex.diagnostic = diagMap.get(ex.diagnostic.id);
+                    }
+                });
+            } catch (e) {
+                console.warn('[FleetDataService] Failed to enrich diagnostic metadata:', e);
+            }
+        }
+
+        // --- EXTENDED DIAGNOSTICS CALCULATION ---
+        const extendedDiagnostics = {
+            odometer: this.getLatestDiagnosticValue(statusData, DiagnosticIds.ODOMETER),
+            engineHours: this.getLatestDiagnosticValue(statusData, DiagnosticIds.ENGINE_HOURS),
+            defLevel: this.getLatestDiagnosticValue(statusData, DiagnosticIds.DEF_LEVEL),
+            coolantTemp: this.getLatestDiagnosticValue(statusData, DiagnosticIds.COOLANT_TEMP),
+            engineSpeed: this.getLatestDiagnosticValue(statusData, DiagnosticIds.ENGINE_SPEED),
+            electricalSystemRating: this.calculateESR(statusData)
+        };
+
         return {
             faults,
             exceptions,
-            statusData
+            statusData,
+            extendedDiagnostics
         };
+    }
+
+    private normalizeRepairStatus(status: unknown): string | undefined {
+        if (typeof status !== 'string' || status.trim() === '') return undefined;
+        const normalized = status.toLowerCase();
+        if (normalized === 'repaired') return 'Repaired';
+        if (normalized === 'notnecessary' || normalized === 'not_necessary') return 'NotNecessary';
+        if (normalized === 'notrepaired' || normalized === 'not_repaired') return 'NotRepaired';
+        return status;
+    }
+
+    private isDefectUnrepaired(defect: { repairStatus?: string; isRepaired?: boolean }): boolean {
+        if (defect.isRepaired === true) return false;
+        return defect.repairStatus !== 'Repaired' && defect.repairStatus !== 'NotNecessary';
+    }
+
+    private extractDvirDefects(logs: unknown[], fallbackDriverName?: string): VehicleData['health']['dvir']['defects'] {
+        if (!Array.isArray(logs) || logs.length === 0) return [];
+
+        const defects: VehicleData['health']['dvir']['defects'] = [];
+        const seen = new Set<string>();
+
+        logs.forEach((entry, entryIndex) => {
+            const log = entry as Record<string, any>;
+            const defectCandidates = Array.isArray(log.defects)
+                ? log.defects
+                : Array.isArray(log.defectRemarks)
+                    ? log.defectRemarks
+                    : Array.isArray(log.defectList)
+                        ? log.defectList
+                        : [];
+
+            defectCandidates.forEach((rawDefect: Record<string, any>, defectIndex: number) => {
+                const repairStatus = this.normalizeRepairStatus(
+                    rawDefect.repairStatus ??
+                    rawDefect.repairState ??
+                    rawDefect.state ??
+                    log.repairStatus
+                );
+                const isRepaired = repairStatus === 'Repaired' || repairStatus === 'NotNecessary';
+
+                const defectName =
+                    rawDefect.defectName ??
+                    rawDefect.name ??
+                    rawDefect.defect?.name ??
+                    rawDefect.comment ??
+                    'Reported defect';
+
+                const id = String(
+                    rawDefect.id ??
+                    `${log.id ?? 'dvir'}-${entryIndex}-${defectIndex}`
+                );
+                const dedupeKey = `${id}-${repairStatus ?? 'unknown'}`;
+                if (seen.has(dedupeKey)) return;
+                seen.add(dedupeKey);
+
+                defects.push({
+                    id,
+                    defectName: String(defectName),
+                    comment: rawDefect.comment ?? log.comment,
+                    date: String(rawDefect.dateTime ?? rawDefect.date ?? log.dateTime ?? new Date().toISOString()),
+                    driverName: String(rawDefect.driver?.name ?? log.driver?.name ?? fallbackDriverName ?? 'Unknown Driver'),
+                    repairStatus,
+                    isRepaired,
+                    certifiedBy: rawDefect.certifiedBy?.name ?? log.certifiedBy?.name
+                });
+            });
+        });
+
+        return defects;
     }
 
 
@@ -809,190 +1202,135 @@ export class FleetDataService {
 
         const startTime = Date.now();
         try {
-            console.log(`[enrichVehicleData] Starting optimized enrichment for ${vehicles.length} vehicles...`);
+            console.log(`[enrichVehicleData] Starting bulk enrichment for ${vehicles.length} vehicles...`);
 
-            // 1. Bulk Fetch Drivers (PERFORMANCE FIX - PROVEN STABLE)
+            const deviceIds = vehicles.map((v) => v.device.id);
+            const deviceIdSet = new Set(deviceIds);
+
             const driverMap = new Map<string, string>();
-            const driverStart = Date.now();
             try {
-                // Fetch up to 5000 users. For most fleets this covers everyone.
                 const users = await this.api.call<User[]>('Get', {
                     typeName: 'User',
-                    search: {
-                        isDriver: true
-                    },
+                    search: { isDriver: true },
                     resultsLimit: 5000
                 });
 
-                users.forEach(u => {
+                users.forEach((u) => {
                     const name = (u.firstName && u.lastName) ? `${u.firstName} ${u.lastName}` : (u.name || 'Unknown User');
                     driverMap.set(u.id, name);
                 });
-                console.log(`[enrichVehicleData] Bulk driver fetch: ${users.length} drivers in ${Date.now() - driverStart}ms`);
             } catch (e) {
-                console.warn('[enrichVehicleData] Bulk driver fetch failed', e);
+                console.warn('[enrichVehicleData] Bulk driver fetch failed:', e);
             }
 
-            // 3. Pure Parallel Single-Call Strategy (REVERTED & BOOSTED)
-            // MultiCall failed in Prod. We revert to single calls but boost concurrency.
-            const CONCURRENCY_LIMIT = 10;
-            const diagMap = new Map<string, Map<string, number>>();
             const faultMap = new Map<string, FaultData[]>();
-
-            console.log(`[enrichVehicleData] Starting telemetry/fault loop. Concurrency: ${CONCURRENCY_LIMIT}`);
-
-            const processVehicle = async (v: VehicleData) => {
-                const safeDiagnostics = [
-                    { id: DiagnosticIds.FUEL_LEVEL },
-                    { id: DiagnosticIds.STATE_OF_CHARGE },
-                    { id: DiagnosticIds.BATTERY_VOLTAGE },
-                    { id: DiagnosticIds.CHARGING_STATE },
-                    { id: DiagnosticIds.CAMERA_ONLINE },
-                    { id: DiagnosticIds.VIDEO_DEVICE_HEALTH },
-                    { id: DiagnosticIds.CAMERA_STATUS_ROAD },
-                ];
-
-                const promises: Promise<any>[] = [];
-
-                // A. Diagnostics (Parallel Single Calls)
-                const diagPromises = safeDiagnostics.map(diag =>
-                    this.api.call<any[]>('Get', {
-                        typeName: 'StatusData',
+            try {
+                const faultFromDate = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+                const faults: FaultData[] = [];
+                const calls = deviceIds.map((id) => ({
+                    method: 'Get',
+                    params: {
+                        typeName: 'FaultData',
                         search: {
-                            deviceSearch: { id: v.device.id },
-                            diagnosticSearch: { id: diag.id }
+                            fromDate: faultFromDate,
+                            deviceSearch: { id }
                         },
-                        resultsLimit: 1
-                    }).then(results => ({ type: 'diag', diagId: diag.id, results }))
-                        .catch(e => ({ type: 'diag', diagId: diag.id, error: e }))
-                );
-                promises.push(...diagPromises);
-
-                // B. Faults (Single Call)
-                const faultPromise = this.api.call<FaultData[]>('Get', {
-                    typeName: 'FaultData',
-                    search: {
-                        deviceSearch: { id: v.device.id },
-                        fromDate: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
-                    },
-                    resultsLimit: 10
-                }).then(results => ({ type: 'fault', results }))
-                    .catch(e => ({ type: 'fault', error: e, results: [] }));
-
-                promises.push(faultPromise);
-
-                const results = await Promise.all(promises);
-
-                results.forEach((res: any) => {
-                    if (res.type === 'diag' && res.results && res.results.length > 0) {
-                        const item = res.results[0]; // resultsLimit: 1
-                        if (typeof item.data === 'number') {
-                            if (!diagMap.has(v.device.id)) diagMap.set(v.device.id, new Map());
-                            diagMap.get(v.device.id)!.set(res.diagId, item.data);
-                        }
-                    } else if (res.type === 'fault' && res.results && res.results.length > 0) {
-                        faultMap.set(v.device.id, res.results);
+                        resultsLimit: 100
                     }
-                });
-            };
+                }));
 
-            // Execute in chunks to respect concurrency
-            for (let i = 0; i < vehicles.length; i += CONCURRENCY_LIMIT) {
-                const chunk = vehicles.slice(i, i + CONCURRENCY_LIMIT);
-                await Promise.all(chunk.map(v => processVehicle(v)));
-            }
-
-            console.log(`[enrichVehicleData] IDENTIFIED: ${diagMap.size} vehicles with data`);
-
-            // 5. Build Final Vehicle List
-            return vehicles.map(v => {
-                const dMap = diagMap.get(v.device.id);
-                const vehicleFaults = faultMap.get(v.device.id) || [];
-
-                // Aggressive Mapping (Standard -> Fallback)
-                const fuel = dMap?.get(DiagnosticIds.FUEL_LEVEL) ??
-                    dMap?.get('DiagnosticFuelLevelPercentageId') ??
-                    dMap?.get('DiagnosticFuelLevelIdPercentage') ??
-                    dMap?.get('DiagnosticFuelLevelId');
-
-                const soc = dMap?.get(DiagnosticIds.STATE_OF_CHARGE) ??
-                    dMap?.get('DiagnosticElectricVehicleBatteryChargeId') ??
-                    dMap?.get('DiagnosticBatteryStateOfChargeId') ??
-                    dMap?.get('DiagnosticHVBatterySocId');
-
-                const volt = dMap?.get(DiagnosticIds.BATTERY_VOLTAGE) ??
-                    dMap?.get('DiagnosticEngineBatteryVoltageId') ??
-                    dMap?.get('DiagnosticMainBatteryVoltageId');
-
-                // Charging Status
-                const chargingState = dMap?.get(DiagnosticIds.CHARGING_STATE);
-                const isCharging = chargingState !== undefined && chargingState > 0;
-
-                // Driver Name
-                const driverName = (v.status.driver && driverMap.get(v.status.driver.id)) || v.driverName || 'No Driver';
-
-                // Camera Health Logic
-                let camHealth = v.cameraStatus?.health;
-                let isCamOnline = v.cameraStatus?.isOnline;
-
-                // Check for new camera diagnostics
-                if (dMap) {
-                    const onlineVal = dMap.get(DiagnosticIds.CAMERA_ONLINE);
-                    const healthVal = dMap.get(DiagnosticIds.VIDEO_DEVICE_HEALTH);
-                    const roadVal = dMap.get(DiagnosticIds.CAMERA_STATUS_ROAD);
-
-                    // If we have ANY camera data, assume camera exists (if not already detected)
-                    const hasCamData = onlineVal !== undefined || healthVal !== undefined || roadVal !== undefined;
-
-                    if (hasCamData) {
-                        // Logic from mergeData adapted
-                        if (onlineVal !== undefined && onlineVal === 0) {
-                            camHealth = 'offline';
-                            isCamOnline = false;
-                        } else {
-                            // Reset to good if formerly unknown, then degrade based on faults
-                            if (!camHealth) camHealth = 'good';
-                            isCamOnline = true;
-
-                            if (healthVal === 2 || healthVal === 3) camHealth = 'critical';
-                            else if (roadVal === 0 || roadVal === 4) camHealth = 'critical';
-                            else if (healthVal === 1) camHealth = 'warning';
-                            else if (roadVal === 1 || roadVal === 3) camHealth = 'warning';
-                        }
+                const CALLS_PER_BATCH = 40;
+                for (let i = 0; i < calls.length; i += CALLS_PER_BATCH) {
+                    const chunk = calls.slice(i, i + CALLS_PER_BATCH);
+                    try {
+                        const batch = await this.api.multiCall<any[]>(chunk);
+                        batch.flatMap((entry) => Array.isArray(entry) ? entry : []).forEach((f) => faults.push(f as FaultData));
+                    } catch (e) {
+                        console.warn(`[enrichVehicleData] Fault batch failed (${i}-${i + chunk.length}):`, e);
                     }
                 }
 
-                const updatedCameraStatus = v.cameraStatus ? {
-                    ...v.cameraStatus,
-                    health: camHealth,
-                    isOnline: isCamOnline
-                } : (dMap && (dMap.get(DiagnosticIds.CAMERA_ONLINE) !== undefined) ? { // Create if new
-                    deviceId: v.device.id,
-                    name: 'On-Board Camera',
-                    isOnline: isCamOnline ?? false,
-                    health: camHealth,
-                    lastHeartbeat: new Date().toISOString()
-                } : undefined);
+                faults.forEach((fault) => {
+                    const id = fault.device?.id;
+                    if (!id || !deviceIdSet.has(id)) return;
+                    if (!faultMap.has(id)) faultMap.set(id, []);
+                    faultMap.get(id)!.push(fault);
+                });
+            } catch (e) {
+                console.warn('[enrichVehicleData] Fault enrichment failed:', e);
+            }
 
+            const dvirMap = new Map<string, VehicleData['health']['dvir']['defects']>();
+            try {
+                const dvirFromDate = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+                const dvirLogs: any[] = [];
+                const calls = deviceIds.map((id) => ({
+                    method: 'Get',
+                    params: {
+                        typeName: 'DVIRLog',
+                        search: {
+                            deviceSearch: { id },
+                            fromDate: dvirFromDate
+                        },
+                        resultsLimit: 100
+                    }
+                }));
+
+                const CALLS_PER_BATCH = 25;
+                for (let i = 0; i < calls.length; i += CALLS_PER_BATCH) {
+                    const chunk = calls.slice(i, i + CALLS_PER_BATCH);
+                    try {
+                        const batch = await this.api.multiCall<any[]>(chunk);
+                        batch.flatMap((entry) => Array.isArray(entry) ? entry : []).forEach((log) => dvirLogs.push(log));
+                    } catch (e) {
+                        console.warn(`[enrichVehicleData] DVIR batch failed (${i}-${i + chunk.length}):`, e);
+                    }
+                }
+
+                const logsByDevice = new Map<string, unknown[]>();
+                dvirLogs.forEach((entry) => {
+                    const log = entry as Record<string, any>;
+                    const id = log.device?.id;
+                    if (!id || !deviceIdSet.has(id)) return;
+                    if (!logsByDevice.has(id)) logsByDevice.set(id, []);
+                    logsByDevice.get(id)!.push(log);
+                });
+
+                vehicles.forEach((vehicle) => {
+                    const logs = logsByDevice.get(vehicle.device.id) ?? [];
+                    dvirMap.set(vehicle.device.id, this.extractDvirDefects(logs, vehicle.driverName));
+                });
+            } catch (e) {
+                console.warn('[enrichVehicleData] DVIR enrichment failed (non-critical):', e);
+            }
+
+            return vehicles.map((v) => {
+                const vehicleFaults = faultMap.get(v.device.id) ?? v.activeFaults;
+                const dvirDefects = dvirMap.get(v.device.id) ?? v.health.dvir.defects;
+                const hasUnrepairedDefects = dvirDefects.some((defect) => this.isDefectUnrepaired(defect));
+                const driverName = (v.status.driver?.id && driverMap.get(v.status.driver.id)) || v.driverName || 'No Driver';
 
                 return {
                     ...v,
-                    fuelLevel: fuel !== undefined ? fuel : v.fuelLevel,
-                    stateOfCharge: soc !== undefined ? soc : v.stateOfCharge,
-                    batteryVoltage: volt !== undefined ? volt : v.batteryVoltage,
-                    isCharging: isCharging,
-                    driverName: driverName,
+                    driverName,
                     activeFaults: vehicleFaults,
-                    hasCriticalFaults: vehicleFaults.some(f => f.controller && f.controller.name !== 'Telematics Device'),
-                    cameraStatus: updatedCameraStatus as any
+                    hasCriticalFaults: vehicleFaults.some((f) => !isTelematicsFault(f)),
+                    hasUnrepairedDefects,
+                    health: {
+                        ...v.health,
+                        dvir: {
+                            defects: dvirDefects,
+                            isClean: !hasUnrepairedDefects
+                        }
+                    }
                 };
             });
 
         } catch (error) {
-            console.error('[enrichVehicleData] Optimization failed, returning original list:', error);
+            console.error('[enrichVehicleData] Enrichment failed, returning original list:', error);
             return vehicles;
         } finally {
-            console.log(`[enrichVehicleData] Optimization cycle completed in ${Date.now() - startTime}ms`);
+            console.log(`[enrichVehicleData] Enrichment cycle completed in ${Date.now() - startTime}ms`);
         }
     }
 }

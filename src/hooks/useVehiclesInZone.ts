@@ -5,7 +5,7 @@
  * 60-second polling when zone is selected.
  */
 
-import { useEffect, useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { queryKeys, POLLING_INTERVALS } from '@/lib/queryClient';
 import { FleetDataService } from '@/services/FleetDataService';
@@ -19,6 +19,7 @@ interface UseVehiclesInZoneResult {
     isLoading: boolean;
     isFetching: boolean;
     isEnriching: boolean;
+    isPollingActive: boolean;
     error: Error | null;
     refetch: () => void;
     dataUpdatedAt: number;
@@ -26,14 +27,47 @@ interface UseVehiclesInZoneResult {
 
 export function useVehiclesInZone(zone: Zone | null): UseVehiclesInZoneResult {
     const { api, isLoading: apiLoading, error: apiError } = useGeotabApi();
+    const isPollingPaused = useFleetStore((s) => s.isPollingPaused);
+    const [isPageVisible, setIsPageVisible] = useState(
+        typeof document === 'undefined' ? true : document.visibilityState === 'visible'
+    );
     const zoneId = zone?.id;
+    const zoneShapeHash = useMemo(() => {
+        if (!zone?.points?.length) return 'no-points';
+
+        let hash = 0;
+        for (const point of zone.points) {
+            const token = `${point.x.toFixed(6)},${point.y.toFixed(6)};`;
+            for (let i = 0; i < token.length; i++) {
+                hash = ((hash << 5) - hash) + token.charCodeAt(i);
+                hash |= 0;
+            }
+        }
+
+        return `${zone.points.length}:${hash}`;
+    }, [zone?.points]);
+
+    useEffect(() => {
+        if (typeof document === 'undefined') return;
+
+        const handleVisibilityChange = () => {
+            setIsPageVisible(document.visibilityState === 'visible');
+        };
+
+        document.addEventListener('visibilitychange', handleVisibilityChange);
+        return () => {
+            document.removeEventListener('visibilitychange', handleVisibilityChange);
+        };
+    }, []);
+
+    const isPollingActive = isPageVisible && !isPollingPaused;
 
     // STAGE 1: Fast initial fetch (Basic device info + Status)
     const fastQuery = useQuery({
         queryKey: [
             ...queryKeys.vehiclesInZone(zoneId ?? ''),
             'fast',
-            zone?.points?.length ?? 0
+            zoneShapeHash
         ],
         queryFn: async () => {
             if (!api || !zone) throw new Error('API or zoneId not available');
@@ -42,7 +76,8 @@ export function useVehiclesInZone(zone: Zone | null): UseVehiclesInZoneResult {
         },
         enabled: !!api && !!zone && !apiLoading,
         staleTime: 30000,
-        refetchInterval: POLLING_INTERVALS.STATUS_DATA,
+        refetchInterval: isPollingActive ? POLLING_INTERVALS.STATUS_DATA : false,
+        refetchIntervalInBackground: false,
     });
 
     // STAGE 2: Background enrichment (Drivers, Faults)
@@ -89,16 +124,17 @@ export function useVehiclesInZone(zone: Zone | null): UseVehiclesInZoneResult {
                 stateOfCharge: enriched.stateOfCharge,
                 driverName: enriched.driverName,
                 activeFaults: enriched.activeFaults,
-                hasCriticalFaults: enriched.hasCriticalFaults
+                hasCriticalFaults: enriched.hasCriticalFaults,
+                hasUnrepairedDefects: enriched.hasUnrepairedDefects,
+                health: enriched.health,
+                batteryVoltage: enriched.batteryVoltage
             };
         });
     }, [fastQuery.data, enrichQuery.data]);
 
     // Sync to store when data changes
     useEffect(() => {
-        if (vehicles.length > 0) {
-            setVehicles(vehicles);
-        }
+        setVehicles(vehicles);
     }, [vehicles, setVehicles]);
 
     const kpis = FleetDataService.calculateKpis(vehicles);
@@ -109,6 +145,7 @@ export function useVehiclesInZone(zone: Zone | null): UseVehiclesInZoneResult {
         isLoading: apiLoading || fastQuery.isLoading,
         isFetching: fastQuery.isFetching || enrichQuery.isFetching,
         isEnriching: enrichQuery.isFetching,
+        isPollingActive,
         error: apiError || fastQuery.error || (enrichQuery.error as Error),
         refetch: () => {
             fastQuery.refetch();
