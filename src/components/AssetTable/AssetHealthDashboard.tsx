@@ -476,8 +476,73 @@ function getOpenDvirDefectGroups(vehicle: VehicleData): DvirDefectGroup[] {
     );
 }
 
+function normalizeHost(candidate: string | undefined): string | null {
+    if (!candidate) return null;
+
+    const trimmed = candidate.trim();
+    if (!trimmed) return null;
+
+    const withProtocol = trimmed.includes('://') ? trimmed : `https://${trimmed}`;
+
+    try {
+        const parsed = new URL(withProtocol);
+        const host = parsed.host;
+        if (!host) return null;
+        if (host.toLowerCase() === 'undefined') return null;
+        return host;
+    } catch {
+        return null;
+    }
+}
+
+function resolveGeotabHost(session: GeotabSession): string {
+    const sessionHost = normalizeHost(session.path);
+    if (sessionHost) return sessionHost;
+
+    const maybeServer = normalizeHost((session as unknown as { server?: string }).server);
+    if (maybeServer) return maybeServer;
+
+    if (typeof document !== 'undefined' && document.referrer) {
+        try {
+            const referrerHost = new URL(document.referrer).host;
+            if (referrerHost.includes('geotab.com')) {
+                return referrerHost;
+            }
+        } catch {
+            // no-op
+        }
+    }
+
+    if (typeof window !== 'undefined' && window.location.hostname.includes('geotab.com')) {
+        return window.location.host;
+    }
+
+    return 'my.geotab.com';
+}
+
+function resolveDatabase(session: GeotabSession): string | null {
+    if (session.database && session.database.trim()) {
+        return session.database.trim();
+    }
+
+    if (typeof document !== 'undefined' && document.referrer) {
+        try {
+            const referrerPath = new URL(document.referrer).pathname.split('/').filter(Boolean);
+            if (referrerPath.length > 0) {
+                return referrerPath[0];
+            }
+        } catch {
+            // no-op
+        }
+    }
+
+    return null;
+}
+
 function buildDvirDetailsUrl(session: GeotabSession, deviceId: string, defectId: string): string {
-    const origin = `https://${session.path}/${session.database}`;
+    const host = resolveGeotabHost(session);
+    const database = resolveDatabase(session);
+    const origin = database ? `https://${host}/${encodeURIComponent(database)}` : `https://${host}`;
     const safeDeviceId = encodeURIComponent(deviceId);
     const safeDefectId = encodeURIComponent(defectId);
 
