@@ -189,10 +189,11 @@ export const AssetHealthDashboard: React.FC<AssetHealthDashboardProps> = ({ vehi
 
                                         try {
                                             const session = await api.getSession();
+                                            const deepLinkId = group.latestDvirLogId || group.latestDefectId;
                                             const detailsUrl = buildDvirDetailsUrl(
                                                 session,
                                                 vehicle.device.id,
-                                                group.latestDefectId
+                                                deepLinkId
                                             );
                                             window.open(detailsUrl, '_blank', 'noopener,noreferrer');
                                         } catch {
@@ -426,6 +427,7 @@ interface DvirDefectGroup {
     count: number;
     latestDate: string;
     latestDefectId: string;
+    latestDvirLogId?: string;
     latestStatus: string;
     latestDriver: string;
     latestComment?: string;
@@ -453,6 +455,7 @@ function getOpenDvirDefectGroups(vehicle: VehicleData): DvirDefectGroup[] {
                 count: 1,
                 latestDate: defect.date,
                 latestDefectId: defect.id,
+                latestDvirLogId: defect.dvirLogId,
                 latestStatus: defect.repairStatus || 'NotRepaired',
                 latestDriver: defect.driverName || 'Unknown Driver',
                 latestComment: defect.comment
@@ -465,6 +468,7 @@ function getOpenDvirDefectGroups(vehicle: VehicleData): DvirDefectGroup[] {
         if (defectTime > existingTime) {
             existing.latestDate = defect.date;
             existing.latestDefectId = defect.id;
+            existing.latestDvirLogId = defect.dvirLogId;
             existing.latestStatus = defect.repairStatus || 'NotRepaired';
             existing.latestDriver = defect.driverName || 'Unknown Driver';
             existing.latestComment = defect.comment;

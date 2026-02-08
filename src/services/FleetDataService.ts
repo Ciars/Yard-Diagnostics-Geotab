@@ -1183,12 +1183,20 @@ export class FleetDataService {
                     rawDefect.id ??
                     `${log.id ?? 'dvir'}-${entryIndex}-${defectIndex}`
                 );
+                const dvirLogId = String(
+                    rawDefect.dvirLog?.id ??
+                    rawDefect.dvirLogId ??
+                    rawDefect.dvir?.id ??
+                    log.id ??
+                    ''
+                ) || undefined;
                 const dedupeKey = `${id}-${repairStatus ?? 'unknown'}`;
                 if (seen.has(dedupeKey)) return;
                 seen.add(dedupeKey);
 
                 defects.push({
                     id,
+                    dvirLogId,
                     defectName: String(defectName),
                     comment: rawDefect.comment ?? log.comment,
                     date: String(rawDefect.dateTime ?? rawDefect.date ?? log.dateTime ?? new Date().toISOString()),

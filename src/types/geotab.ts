@@ -557,6 +557,7 @@ export interface VehicleData {
         dvir: {
             defects: Array<{
                 id: string;
+                dvirLogId?: string;
                 defectName: string;
                 comment?: string;
                 date: string;
