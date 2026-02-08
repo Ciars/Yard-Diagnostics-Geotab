@@ -1,18 +1,39 @@
 /**
  * Zone Map Component
- * 
+ *
  * Leaflet map displaying zone polygon and vehicle markers.
  * Per UI_BLUEPRINT.md Section 2.C
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { MapContainer, TileLayer, Polygon, CircleMarker, Popup, Tooltip, useMap, useMapEvents } from 'react-leaflet';
+import { useEffect, useMemo } from 'react';
+import { MapContainer, TileLayer, Polygon, CircleMarker, Popup, Tooltip, useMap } from 'react-leaflet';
 import L from 'leaflet';
-import type { Map as LeafletMap, LatLngBounds } from 'leaflet';
-import { IconMap2, IconRefresh, IconBolt, IconAlertTriangle, IconMoonStars } from '@tabler/icons-react';
+import type { LatLngBounds } from 'leaflet';
+import {
+    IconAntennaBarsOff,
+    IconAlertTriangle,
+    IconBatteryExclamation,
+    IconBolt,
+    IconCameraOff,
+    IconCar,
+    IconEngine,
+    IconMap2,
+    IconMoonStars,
+    IconPlugConnected,
+    IconRefresh,
+    IconWifiOff
+} from '@tabler/icons-react';
 import 'leaflet/dist/leaflet.css';
 import type { Zone, VehicleData } from '@/types/geotab';
-import { isVehicleCharging, isVehicleCritical, isVehicleDormant, isVehicleSilent } from '@/lib/vehicleHealthPredicates';
+import {
+    BATTERY_CRITICAL_VOLTS,
+    hasVehicleCameraIssue,
+    isVehicleCharging,
+    isVehicleCritical,
+    isVehicleDormant,
+    isVehicleSilent
+} from '@/lib/vehicleHealthPredicates';
+import { isTelematicsFault } from '@/services/FaultService';
 import './ZoneMap.css';
 
 interface ZoneMapProps {
@@ -31,19 +52,22 @@ interface ZoneMapProps {
     onVehicleClick?: (vehicleId: string) => void;
 }
 
-interface ClusterMarker {
+type MarkerSeverity = 'healthy' | 'issue' | 'critical';
+type MarkerCore = 'vehicle' | 'charging' | 'dormant' | 'offline';
+type MarkerBadge = 'none' | 'engine' | 'telematics' | 'camera' | 'battery';
+
+interface VehicleMarker {
     key: string;
     center: [number, number];
-    vehicles: VehicleData[];
-    bounds: LatLngBounds;
-    color: string;
+    vehicle: VehicleData;
+    severity: MarkerSeverity;
+    core: MarkerCore;
+    badge: MarkerBadge;
 }
 
 const MARKER_COLORS = {
     critical: '#A01F0E',
-    charging: '#0C74C3',
-    dormant: '#59480D',
-    silent: '#8DA4B9',
+    issue: '#E07A16',
     healthy: '#4AA75E'
 } as const;
 
@@ -53,36 +77,79 @@ function convertZonePoints(zone: Zone): [number, number][] {
     if (!zone.points || zone.points.length === 0) {
         return [];
     }
-    return zone.points.map(point => [point.y, point.x] as [number, number]);
+    return zone.points.map((point) => [point.y, point.x] as [number, number]);
 }
 
-// Get marker color based on vehicle status
-function getMarkerColor(vehicle: VehicleData): string {
-    if (isVehicleCritical(vehicle)) {
-        return MARKER_COLORS.critical;
+function hasLowBattery(vehicle: VehicleData): boolean {
+    return typeof vehicle.batteryVoltage === 'number' && vehicle.batteryVoltage <= BATTERY_CRITICAL_VOLTS;
+}
+
+function hasEngineIssue(vehicle: VehicleData): boolean {
+    if (vehicle.hasCriticalFaults) return true;
+    return (vehicle.activeFaults ?? []).some((fault) => !isTelematicsFault(fault));
+}
+
+function hasTelematicsIssue(vehicle: VehicleData): boolean {
+    if (isVehicleSilent(vehicle)) return true;
+
+    const healthIssues = vehicle.health?.issues ?? [];
+    if (healthIssues.some((issue) => issue.source === 'device')) return true;
+
+    return (vehicle.activeFaults ?? []).some(isTelematicsFault);
+}
+
+function getMarkerSeverity(vehicle: VehicleData): MarkerSeverity {
+    if (isVehicleCritical(vehicle)) return 'critical';
+
+    if (
+        isVehicleSilent(vehicle)
+        || isVehicleDormant(vehicle)
+        || isVehicleCharging(vehicle)
+        || hasVehicleCameraIssue(vehicle)
+        || hasEngineIssue(vehicle)
+        || hasTelematicsIssue(vehicle)
+        || hasLowBattery(vehicle)
+    ) {
+        return 'issue';
     }
-    if (isVehicleCharging(vehicle)) {
-        return MARKER_COLORS.charging;
-    }
-    if (isVehicleDormant(vehicle)) {
-        return MARKER_COLORS.dormant;
-    }
-    if (isVehicleSilent(vehicle)) {
-        return MARKER_COLORS.silent;
-    }
+
+    return 'healthy';
+}
+
+function getMarkerCore(vehicle: VehicleData): MarkerCore {
+    if (isVehicleSilent(vehicle)) return 'offline';
+    if (isVehicleCharging(vehicle)) return 'charging';
+    if (isVehicleDormant(vehicle)) return 'dormant';
+    return 'vehicle';
+}
+
+function getMarkerBadge(vehicle: VehicleData): MarkerBadge {
+    if (hasEngineIssue(vehicle)) return 'engine';
+    if (hasTelematicsIssue(vehicle)) return 'telematics';
+    if (hasVehicleCameraIssue(vehicle)) return 'camera';
+    if (hasLowBattery(vehicle)) return 'battery';
+    return 'none';
+}
+
+function getSeverityColor(severity: MarkerSeverity): string {
+    if (severity === 'critical') return MARKER_COLORS.critical;
+    if (severity === 'issue') return MARKER_COLORS.issue;
     return MARKER_COLORS.healthy;
 }
 
-function getClusterGridSizeDegrees(zoom: number): number {
-    return Math.max(0.003, 1.3 / Math.pow(2, Math.max(0, zoom - 5)));
+function renderCoreIcon(core: MarkerCore) {
+    if (core === 'charging') return <IconPlugConnected size={24} stroke={2.2} />;
+    if (core === 'dormant') return <IconMoonStars size={24} stroke={2.2} />;
+    if (core === 'offline') return <IconWifiOff size={24} stroke={2.2} />;
+    return <IconCar size={24} stroke={2.2} />;
 }
 
-function getClusterColor(vehicles: VehicleData[]): string {
-    if (vehicles.some(isVehicleCritical)) return MARKER_COLORS.critical;
-    if (vehicles.some(isVehicleCharging)) return MARKER_COLORS.charging;
-    if (vehicles.some(isVehicleDormant)) return MARKER_COLORS.dormant;
-    if (vehicles.some(isVehicleSilent)) return MARKER_COLORS.silent;
-    return MARKER_COLORS.healthy;
+function renderBadgeIcon(badge: MarkerBadge) {
+    if (badge === 'engine') return <IconEngine size={10} stroke={2.2} />;
+    if (badge === 'telematics') return <IconAntennaBarsOff size={10} stroke={2.2} />;
+    if (badge === 'camera') return <IconCameraOff size={10} stroke={2.2} />;
+    if (badge === 'battery') return <IconBatteryExclamation size={10} stroke={2.2} />;
+    return null;
 }
 
 // Component to handle map bounds
@@ -94,20 +161,6 @@ function MapBoundsHandler({ bounds }: { bounds: LatLngBounds | null }) {
             map.fitBounds(bounds, { padding: [20, 20] });
         }
     }, [map, bounds]);
-
-    return null;
-}
-
-function MapZoomTracker({ onZoomChange }: { onZoomChange: (zoom: number) => void }) {
-    const map = useMapEvents({
-        zoomend: () => {
-            onZoomChange(map.getZoom());
-        }
-    });
-
-    useEffect(() => {
-        onZoomChange(map.getZoom());
-    }, [map, onZoomChange]);
 
     return null;
 }
@@ -165,9 +218,6 @@ export function ZoneMap({
     focusRequest = null,
     onVehicleClick
 }: ZoneMapProps) {
-    const mapRef = useRef<LeafletMap | null>(null);
-    const [zoom, setZoom] = useState(6);
-
     // Convert zone points to Leaflet format
     const zonePolygon = useMemo(() => {
         return zone ? convertZonePoints(zone) : [];
@@ -194,94 +244,22 @@ export function ZoneMap({
         return vehicles.filter((v) => filteredVehicleSet.has(v.device.id));
     }, [vehicles, filteredVehicleSet]);
 
-    const shouldCluster = displayVehicles.length > 100 && zoom < 13;
-
-    const markerData = useMemo<ClusterMarker[]>(() => {
-        const positionedVehicles = displayVehicles.filter((vehicle) =>
-            Number.isFinite(vehicle.status.latitude) && Number.isFinite(vehicle.status.longitude)
-        );
-
-        if (!shouldCluster) {
-            return positionedVehicles.map((vehicle) => {
+    const markerData = useMemo<VehicleMarker[]>(() => {
+        return displayVehicles
+            .filter((vehicle) => Number.isFinite(vehicle.status.latitude) && Number.isFinite(vehicle.status.longitude))
+            .map((vehicle) => {
                 const lat = vehicle.status.latitude;
                 const lng = vehicle.status.longitude;
-                const bounds = L.latLngBounds([L.latLng(lat, lng), L.latLng(lat, lng)]);
                 return {
                     key: vehicle.device.id,
                     center: [lat, lng],
-                    vehicles: [vehicle],
-                    bounds,
-                    color: getMarkerColor(vehicle)
+                    vehicle,
+                    severity: getMarkerSeverity(vehicle),
+                    core: getMarkerCore(vehicle),
+                    badge: getMarkerBadge(vehicle)
                 };
             });
-        }
-
-        const cellSize = getClusterGridSizeDegrees(zoom);
-        const buckets = new Map<string, {
-            vehicles: VehicleData[];
-            latSum: number;
-            lngSum: number;
-            minLat: number;
-            maxLat: number;
-            minLng: number;
-            maxLng: number;
-        }>();
-
-        positionedVehicles.forEach((vehicle) => {
-            const lat = vehicle.status.latitude;
-            const lng = vehicle.status.longitude;
-            const row = Math.floor(lat / cellSize);
-            const col = Math.floor(lng / cellSize);
-            const key = `${row}:${col}`;
-
-            const existing = buckets.get(key);
-            if (!existing) {
-                buckets.set(key, {
-                    vehicles: [vehicle],
-                    latSum: lat,
-                    lngSum: lng,
-                    minLat: lat,
-                    maxLat: lat,
-                    minLng: lng,
-                    maxLng: lng
-                });
-                return;
-            }
-
-            existing.vehicles.push(vehicle);
-            existing.latSum += lat;
-            existing.lngSum += lng;
-            existing.minLat = Math.min(existing.minLat, lat);
-            existing.maxLat = Math.max(existing.maxLat, lat);
-            existing.minLng = Math.min(existing.minLng, lng);
-            existing.maxLng = Math.max(existing.maxLng, lng);
-        });
-
-        return Array.from(buckets.entries()).map(([key, bucket]) => {
-            const centerLat = bucket.latSum / bucket.vehicles.length;
-            const centerLng = bucket.lngSum / bucket.vehicles.length;
-            const bounds = L.latLngBounds(
-                L.latLng(bucket.minLat, bucket.minLng),
-                L.latLng(bucket.maxLat, bucket.maxLng)
-            );
-
-            return {
-                key,
-                center: [centerLat, centerLng],
-                vehicles: bucket.vehicles,
-                bounds,
-                color: getClusterColor(bucket.vehicles)
-            };
-        });
-    }, [displayVehicles, shouldCluster, zoom]);
-
-    const handleClusterClick = useCallback((boundsToFit: LatLngBounds) => {
-        if (!mapRef.current || !boundsToFit.isValid()) return;
-        mapRef.current.fitBounds(boundsToFit, {
-            padding: [28, 28],
-            maxZoom: 15
-        });
-    }, []);
+    }, [displayVehicles]);
 
     if (!zone) {
         return (
@@ -302,7 +280,6 @@ export function ZoneMap({
                 center={bounds?.getCenter() || DEFAULT_CENTER}
                 zoom={DEFAULT_ZOOM}
                 className="zone-map__container"
-                ref={mapRef}
             >
                 <TileLayer
                     attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
@@ -313,7 +290,6 @@ export function ZoneMap({
                 <MapBoundsHandler bounds={bounds} />
                 <MapResizeHandler bounds={bounds} layoutRevision={layoutRevision} />
                 <MapFocusHandler focusRequest={focusRequest} />
-                <MapZoomTracker onZoomChange={setZoom} />
 
                 {/* Zone polygon */}
                 {zonePolygon.length > 2 && (
@@ -330,84 +306,72 @@ export function ZoneMap({
 
                 {/* Vehicle markers */}
                 {markerData.map((marker) => {
-                    if (marker.vehicles.length === 1) {
-                        const vehicle = marker.vehicles[0];
-                        const isHovered = hoveredVehicleId === vehicle.device.id;
-
-                        return (
-                            <CircleMarker
-                                key={marker.key}
-                                center={marker.center}
-                                radius={isHovered ? 10 : 5}
-                                pathOptions={{
-                                    color: marker.color,
-                                    fillColor: marker.color,
-                                    fillOpacity: isHovered ? 0.85 : 0.5,
-                                    weight: isHovered ? 2.5 : 1.5,
-                                }}
-                                eventHandlers={{
-                                    click: () => onVehicleClick?.(vehicle.device.id)
-                                }}
-                            >
-                                <Popup>
-                                    <div className="marker-popup">
-                                        <strong>{vehicle.device.name}</strong>
-                                        <br />
-                                        {vehicle.isCharging && (
-                                            <span className="marker-popup__status">
-                                                <IconBolt size={13} />
-                                                Charging
-                                            </span>
-                                        )}
-                                        {isVehicleCritical(vehicle) && (
-                                            <span className="marker-popup__status">
-                                                <IconAlertTriangle size={13} />
-                                                Requires attention
-                                            </span>
-                                        )}
-                                        {isVehicleDormant(vehicle) && (
-                                            <span className="marker-popup__status">
-                                                <IconMoonStars size={13} />
-                                                Dormant ({vehicle.dormancyDays === null ? 'Since Install' : `${Math.round(vehicle.dormancyDays)}d`})
-                                            </span>
-                                        )}
-                                    </div>
-                                </Popup>
-                            </CircleMarker>
-                        );
-                    }
-
-                    const criticalCount = marker.vehicles.filter(isVehicleCritical).length;
-                    const silentCount = marker.vehicles.filter(isVehicleSilent).length;
-                    const dormantCount = marker.vehicles.filter(isVehicleDormant).length;
-                    const chargingCount = marker.vehicles.filter(isVehicleCharging).length;
-                    const clusterRadius = Math.min(20, 8 + Math.log2(marker.vehicles.length) * 3);
+                    const { vehicle, severity, core, badge } = marker;
+                    const isHovered = hoveredVehicleId === vehicle.device.id;
+                    const markerColor = getSeverityColor(severity);
 
                     return (
                         <CircleMarker
                             key={marker.key}
                             center={marker.center}
-                            radius={clusterRadius}
+                            radius={isHovered ? 24 : 12}
                             pathOptions={{
-                                color: marker.color,
-                                fillColor: marker.color,
-                                fillOpacity: 0.7,
-                                weight: 2,
+                                color: markerColor,
+                                fillColor: markerColor,
+                                fillOpacity: severity === 'healthy'
+                                    ? (isHovered ? 0.55 : 0.38)
+                                    : (isHovered ? 0.8 : 0.62),
+                                weight: severity === 'critical'
+                                    ? (isHovered ? 8 : 6)
+                                    : (isHovered ? 6 : 4),
+                                dashArray: severity === 'critical' ? '8 6' : undefined
                             }}
                             eventHandlers={{
-                                click: () => handleClusterClick(marker.bounds)
+                                click: () => onVehicleClick?.(vehicle.device.id)
                             }}
                         >
-                            <Tooltip permanent direction="center" className="zone-map__cluster-label">
-                                {marker.vehicles.length}
+                            <Tooltip
+                                permanent
+                                direction="center"
+                                opacity={1}
+                                interactive={false}
+                                className="zone-map__marker-tooltip"
+                            >
+                                <span className={`zone-map__marker-glyph zone-map__marker-glyph--${severity}`}>
+                                    <span className="zone-map__marker-core">{renderCoreIcon(core)}</span>
+                                    {badge !== 'none' && (
+                                        <span className="zone-map__marker-badge">{renderBadgeIcon(badge)}</span>
+                                    )}
+                                </span>
                             </Tooltip>
                             <Popup>
-                                <div className="marker-popup marker-popup--cluster">
-                                    <strong>{marker.vehicles.length} vehicles in this area</strong>
-                                    <span>Critical: {criticalCount}</span>
-                                    <span>Silent: {silentCount}</span>
-                                    <span>Dormant: {dormantCount}</span>
-                                    <span>Charging: {chargingCount}</span>
+                                <div className="marker-popup">
+                                    <strong>{vehicle.device.name}</strong>
+                                    <br />
+                                    {isVehicleCharging(vehicle) && (
+                                        <span className="marker-popup__status">
+                                            <IconBolt size={13} />
+                                            Charging
+                                        </span>
+                                    )}
+                                    {isVehicleCritical(vehicle) && (
+                                        <span className="marker-popup__status">
+                                            <IconAlertTriangle size={13} />
+                                            Requires attention
+                                        </span>
+                                    )}
+                                    {isVehicleDormant(vehicle) && (
+                                        <span className="marker-popup__status">
+                                            <IconMoonStars size={13} />
+                                            Dormant ({vehicle.dormancyDays === null ? 'Since Install' : `${Math.round(vehicle.dormancyDays)}d`})
+                                        </span>
+                                    )}
+                                    {isVehicleSilent(vehicle) && (
+                                        <span className="marker-popup__status">
+                                            <IconWifiOff size={13} />
+                                            Telematics signal lost
+                                        </span>
+                                    )}
                                 </div>
                             </Popup>
                         </CircleMarker>
@@ -421,17 +385,10 @@ export function ZoneMap({
                 </button>
             )}
 
-            {shouldCluster && (
-                <div className="zone-map__cluster-hint">
-                    Dense view: markers clustered, zoom in for individual vehicles
-                </div>
-            )}
-
             <div className="zone-map__legend">
                 <span className="legend-item"><span className="legend-dot" style={{ background: MARKER_COLORS.healthy }} /> Healthy</span>
+                <span className="legend-item"><span className="legend-dot" style={{ background: MARKER_COLORS.issue }} /> Issue</span>
                 <span className="legend-item"><span className="legend-dot" style={{ background: MARKER_COLORS.critical }} /> Critical</span>
-                <span className="legend-item"><span className="legend-dot" style={{ background: MARKER_COLORS.dormant }} /> Dormant</span>
-                <span className="legend-item"><span className="legend-dot" style={{ background: MARKER_COLORS.charging }} /> Charging</span>
             </div>
         </div>
     );

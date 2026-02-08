@@ -15,7 +15,9 @@
     "preview": "vite preview",
     "test": "vitest",
     "test:ui": "vitest --ui",
-    "test:coverage": "vitest --coverage"
+    "test:coverage": "vitest --coverage",
+    "serve:local:stable": "bash ./scripts/serve_local_stable.sh",
+    "serve:local:stable:nobuild": "BUILD_ON_START=0 bash ./scripts/serve_local_stable.sh"
   },
   "dependencies": {
     "@geotab/zenith": "^3.4.1",

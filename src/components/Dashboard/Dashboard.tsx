@@ -13,6 +13,7 @@ import { Sidebar } from '@/components/Sidebar/Sidebar';
 import { KpiTiles } from '@/components/KpiTiles/KpiTiles';
 import { AssetTable } from '@/components/AssetTable/AssetTable';
 import { ZoneMap } from '@/components/Map/ZoneMap';
+import { WeatherTablet } from '@/components/Weather/WeatherTablet';
 import { useZoneWeather } from '@/hooks/useZoneWeather';
 import {
     IconFileDownload,
@@ -93,10 +94,12 @@ export function Dashboard() {
     const weatherLabel = zoneWeather?.temperatureC !== null && zoneWeather?.temperatureC !== undefined
         ? `${Math.round(zoneWeather.temperatureC)}°C`
         : '--°C';
-    const weatherIcon = zoneWeather?.icon ?? '🌡️';
+    const weatherFamily = zoneWeather?.family ?? 'unknown';
+    const weatherIntensity = zoneWeather?.intensity ?? 'light';
     const weatherTitle = zoneWeather
         ? `${zoneWeather.summary} · ${weatherLabel}`
         : 'Weather unavailable';
+    const weatherAnimationKey = `${selectedZoneId ?? 'none'}:${zoneWeather?.weatherCode ?? 'none'}:${weatherLabel}`;
 
     const clampMapPanelWidth = useCallback((nextWidth: number) => {
         if (typeof window === 'undefined') return nextWidth;
@@ -279,10 +282,13 @@ export function Dashboard() {
                             </section>
 
                             <div className="dashboard__data-status">
-                                <span className="weather-chip" title={weatherTitle}>
-                                    <span className="weather-chip__icon" aria-hidden="true">{weatherIcon}</span>
-                                    <span className="weather-chip__temp">{weatherLabel}</span>
-                                </span>
+                                <WeatherTablet
+                                    family={weatherFamily}
+                                    intensity={weatherIntensity}
+                                    temperatureLabel={weatherLabel}
+                                    title={weatherTitle}
+                                    animationKey={weatherAnimationKey}
+                                />
                                 <span className={`status-chip ${isDataStale ? 'status-chip--stale' : 'status-chip--fresh'}`}>
                                     {isDataStale ? 'STALE' : 'FRESH'}
                                 </span>

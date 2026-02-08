@@ -7,6 +7,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { FleetDataService } from '@/services/FleetDataService';
+import { VinDecoderService } from '@/services/VinDecoderService';
 import type { VehicleData } from '@/types/geotab';
 
 describe('FleetDataService.calculateKpis', () => {
@@ -141,6 +142,53 @@ describe('FleetDataService.calculateKpis', () => {
         expect(kpis.dormant).toBe(1);
         expect(kpis.charging).toBe(0);
         expect(kpis.camera).toBe(1);
+    });
+});
+
+describe('VIN metadata enrichment', () => {
+    it('applies make/model from DecodeVins results', async () => {
+        const api = {
+            async call<T>(method: string): Promise<T> {
+                if (method === 'DecodeVins') {
+                    return [
+                        {
+                            vin: 'VIN1234567890',
+                            make: 'Ford',
+                            model: 'F-150'
+                        }
+                    ] as T;
+                }
+                throw new Error(`Unexpected method ${method}`);
+            },
+            async multiCall<T extends unknown[]>(): Promise<T> {
+                return [] as unknown as T;
+            },
+            async getSession() {
+                return { database: 'db', userName: 'user', sessionId: 'session', path: 'my.geotab.com' };
+            },
+            isAuthenticated() {
+                return true;
+            }
+        };
+
+        const service = new FleetDataService(api as any);
+        const vehicles = [createMockVehicle()];
+        vehicles[0].device.vehicleIdentificationNumber = 'vin1234567890';
+        vehicles[0].makeModel = '--';
+
+        await (service as any).enrichVehicleMetadata(vehicles);
+
+        expect(vehicles[0].makeModel).toBe('Ford F-150');
+    });
+
+    it('uses model when make is missing', () => {
+        const makeModel = VinDecoderService.formatMakeModel({
+            vin: 'VIN1234567890',
+            make: '',
+            model: 'Model X'
+        });
+
+        expect(makeModel).toBe('Model X');
     });
 });
 

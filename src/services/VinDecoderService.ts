@@ -35,6 +35,10 @@ export class VinDecoderService {
         this.cache = this.loadCache();
     }
 
+    private normalizeVin(vin: string): string {
+        return vin.trim().toUpperCase();
+    }
+
     /**
      * Load cached VIN data from localStorage
      */
@@ -44,7 +48,13 @@ export class VinDecoderService {
             if (stored) {
                 const parsed = JSON.parse(stored);
                 if (parsed.version === CACHE_VERSION) {
-                    return parsed.data || {};
+                    const raw = parsed.data || {};
+                    const normalized: VinCache = {};
+                    Object.entries(raw).forEach(([key, value]) => {
+                        const normalizedVin = this.normalizeVin(key);
+                        normalized[normalizedVin] = value as DecodedVin;
+                    });
+                    return normalized;
                 }
             }
         } catch (_error) {
@@ -71,7 +81,8 @@ export class VinDecoderService {
      * Get cached VIN decode result
      */
     getCached(vin: string): DecodedVin | undefined {
-        return this.cache[vin];
+        const normalizedVin = this.normalizeVin(vin);
+        return this.cache[normalizedVin] || this.cache[vin];
     }
 
     /**
@@ -81,16 +92,20 @@ export class VinDecoderService {
     async decodeVins(vins: string[]): Promise<Map<string, DecodedVin>> {
         const result = new Map<string, DecodedVin>();
         const vinsToFetch: string[] = [];
+        const queued = new Set<string>();
 
         // Check cache first
-        for (const vin of vins) {
-            if (!vin || vin.length < 11) continue; // VINs must be at least 11 chars
+        for (const rawVin of vins) {
+            if (!rawVin) continue;
+            const vin = this.normalizeVin(rawVin);
+            if (vin.length < 11) continue; // VINs must be at least 11 chars
 
             const cached = this.cache[vin];
             if (cached) {
                 result.set(vin, cached);
-            } else {
+            } else if (!queued.has(vin)) {
                 vinsToFetch.push(vin);
+                queued.add(vin);
             }
         }
 
@@ -106,8 +121,13 @@ export class VinDecoderService {
                 if (decoded && Array.isArray(decoded)) {
                     for (const item of decoded) {
                         if (item.vin) {
-                            this.cache[item.vin] = item;
-                            result.set(item.vin, item);
+                            const normalizedVin = this.normalizeVin(item.vin);
+                            const normalizedItem = {
+                                ...item,
+                                vin: normalizedVin
+                            };
+                            this.cache[normalizedVin] = normalizedItem;
+                            result.set(normalizedVin, normalizedItem);
                         }
                     }
                     this.saveCache();
@@ -126,15 +146,17 @@ export class VinDecoderService {
      * Format decoded VIN as "Make Model" string
      */
     static formatMakeModel(decoded: DecodedVin | undefined): string | undefined {
-        if (!decoded || !decoded.make) return undefined;
+        if (!decoded) return undefined;
 
-        const make = decoded.make.trim();
+        const make = decoded.make?.trim() || '';
         const model = decoded.model?.trim() || '';
 
-        if (model) {
+        if (make && model) {
             return `${make} ${model}`;
         }
-        return make;
+        if (make) return make;
+        if (model) return model;
+        return undefined;
     }
 
     /**

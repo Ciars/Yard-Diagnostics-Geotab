@@ -657,25 +657,39 @@ export class FleetDataService {
     }
 
     private async enrichVehicleMetadata(vehicles: VehicleData[]) {
-        const vinsToDecode: string[] = [];
+        const vinsToDecode = new Set<string>();
+        const vehiclesByVin = new Map<string, VehicleData[]>();
         const vinService = new VinDecoderService(this.api);
 
         // First pass: Fill from cache immediately
         vehicles.forEach(v => {
-            const vin = v.device.vehicleIdentificationNumber;
+            const vin = v.device.vehicleIdentificationNumber?.trim().toUpperCase();
             if (vin) {
+                const list = vehiclesByVin.get(vin) ?? [];
+                list.push(v);
+                vehiclesByVin.set(vin, list);
+
                 const cached = vinService.getCached(vin);
-                if (cached) {
-                    v.makeModel = VinDecoderService.formatMakeModel(cached);
+                const formatted = VinDecoderService.formatMakeModel(cached);
+                if (formatted) {
+                    v.makeModel = formatted;
                 } else {
-                    vinsToDecode.push(vin);
+                    vinsToDecode.add(vin);
                 }
             }
         });
 
         // Second pass: Fetch missing (Async)
-        if (vinsToDecode.length > 0) {
-            await vinService.decodeVins(vinsToDecode);
+        if (vinsToDecode.size > 0) {
+            const decoded = await vinService.decodeVins(Array.from(vinsToDecode));
+            vehiclesByVin.forEach((bucket, vin) => {
+                const formatted = VinDecoderService.formatMakeModel(decoded.get(vin));
+                if (formatted) {
+                    bucket.forEach((vehicle) => {
+                        vehicle.makeModel = formatted;
+                    });
+                }
+            });
         }
     }
 
@@ -891,11 +905,8 @@ export class FleetDataService {
             const result = this.mergeData(zoneDevices, zoneStatuses, [], [], silentDiagnostics);
             console.log(`[getVehicleDataForZone] Merge completed in ${Date.now() - mergeStart}ms, ${result.length} vehicles`);
 
-            this.enrichVehicleMetadata(result).then(() => {
-                console.log(`[getVehicleDataForZone] VIN enrichment completed (background)`);
-            }).catch(err => {
-                console.warn(`[getVehicleDataForZone] VIN enrichment failed (non-critical):`, err);
-            });
+            await this.enrichVehicleMetadata(result);
+            console.log(`[getVehicleDataForZone] VIN enrichment completed`);
 
             console.log(`[getVehicleDataForZone] TOTAL TIME: ${Date.now() - startTime}ms`);
             return result;
