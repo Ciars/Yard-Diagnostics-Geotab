@@ -25,15 +25,7 @@ export default defineConfig({
     // },
     build: {
         outDir: 'dist',
-        sourcemap: false,
-        rollupOptions: {
-            output: {
-                // Geotab expects specific file naming
-                entryFileNames: 'assets/[name].js',
-                chunkFileNames: 'assets/[name].js',
-                assetFileNames: 'assets/[name].[ext]'
-            }
-        }
+        sourcemap: false
     },
     server: {
         host: '127.0.0.1',
