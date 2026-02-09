@@ -579,6 +579,10 @@ export interface VehicleData {
         issues: VehicleIssue[];
         /** Quick flag for row-level icon */
         hasRecurringIssues: boolean;
+        /** Active exception events in current list context */
+        exceptionSummary?: {
+            activeCount: number;
+        };
         /** Device communication status (kept for backward compat) */
         isDeviceOffline: boolean;
         lastHeartbeat: string | undefined;

@@ -64,6 +64,9 @@ const TELEMATICS_NAME_KEYWORDS = [
     'go device',
     'go unit'
 ];
+const CRITICAL_FAILURE_SEVERITIES = new Set(['critical']);
+const BREAKDOWN_RISK_CRITICAL_THRESHOLD = 75;
+type ParsedFaultState = 'active' | 'pending' | 'active_pending' | 'none' | 'unknown';
 
 export function isTelematicsFault(fault: FaultData): boolean {
     const diagId = fault.diagnostic?.id || '';
@@ -91,6 +94,135 @@ export function isTelematicsFault(fault: FaultData): boolean {
 
     const diagnosticName = (fault.diagnostic?.name || '').toLowerCase();
     return TELEMATICS_NAME_KEYWORDS.some((keyword) => diagnosticName.includes(keyword));
+}
+
+function isPendingActiveState(state: string): boolean {
+    return state === 'pendingactive' || (state.includes('pending') && state.includes('active'));
+}
+
+function normalizeFaultState(state: unknown): ParsedFaultState {
+    if (typeof state !== 'string' || !state.trim()) return 'unknown';
+    const normalized = state.toLowerCase();
+    if (isPendingActiveState(normalized)) return 'active_pending';
+    if (normalized === 'active') return 'active';
+    if (normalized === 'pending') return 'pending';
+    if (normalized === 'none' || normalized === 'inactive' || normalized === 'cleared') return 'none';
+    return 'unknown';
+}
+
+function parseFaultStates(fault: FaultData): Set<ParsedFaultState> {
+    const states = new Set<ParsedFaultState>();
+    const raw = fault as unknown as Record<string, unknown>;
+
+    const singleState = raw.faultState ?? raw.faultStatus;
+    const normalizedSingle = normalizeFaultState(singleState);
+    if (normalizedSingle !== 'unknown') states.add(normalizedSingle);
+
+    const multiStates = raw.faultStates;
+    if (Array.isArray(multiStates)) {
+        multiStates.forEach((state) => {
+            const normalized = normalizeFaultState(state);
+            if (normalized !== 'unknown') states.add(normalized);
+        });
+    }
+
+    return states;
+}
+
+function toNumeric(value: unknown): number | undefined {
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value === 'string' && value.trim() !== '') {
+        const parsed = Number(value);
+        if (Number.isFinite(parsed)) return parsed;
+    }
+    return undefined;
+}
+
+function toBooleanSignal(value: unknown): boolean {
+    if (typeof value === 'boolean') return value;
+    if (typeof value === 'number') return value > 0;
+    if (typeof value === 'string') {
+        const normalized = value.toLowerCase().trim();
+        return normalized === 'true' || normalized === '1' || normalized === 'yes' || normalized === 'on';
+    }
+    return false;
+}
+
+function hasSevereRoadworthySignal(fault: FaultData): boolean {
+    const severity = (fault.failureMode?.severity || '').toLowerCase();
+    if (CRITICAL_FAILURE_SEVERITIES.has(severity)) {
+        return true;
+    }
+
+    const raw = fault as unknown as Record<string, unknown>;
+    const hasStopLamp =
+        toBooleanSignal(raw.redStopLamp) ||
+        toBooleanSignal(raw.RedStopLamp) ||
+        toBooleanSignal(raw.stopLamp) ||
+        toBooleanSignal(raw.StopLamp);
+    if (hasStopLamp) return true;
+
+    const hasProtectLamp =
+        toBooleanSignal(raw.protectWarningLamp) ||
+        toBooleanSignal(raw.ProtectWarningLamp) ||
+        toBooleanSignal(raw.protectLamp) ||
+        toBooleanSignal(raw.ProtectLamp);
+    if (hasProtectLamp) return true;
+
+    const riskOfBreakdown = toNumeric(raw.riskOfBreakdown ?? raw.RiskOfBreakdown);
+    if (riskOfBreakdown !== undefined && riskOfBreakdown >= BREAKDOWN_RISK_CRITICAL_THRESHOLD) {
+        return true;
+    }
+
+    return false;
+}
+
+export function isRoadworthyCriticalEngineFault(fault: FaultData): boolean {
+    if (!fault || fault.dismissDateTime) return false;
+    if (detectSource(fault) !== 'ecu') return false;
+
+    const states = parseFaultStates(fault);
+    if (states.has('none')) return false;
+    if (states.has('active_pending')) return hasSevereRoadworthySignal(fault);
+    if (states.has('active')) return hasSevereRoadworthySignal(fault);
+    if (states.has('pending')) return false;
+    return false;
+}
+
+export function isOngoingEngineFault(fault: FaultData): boolean {
+    if (!fault || fault.dismissDateTime) return false;
+    if (detectSource(fault) !== 'ecu') return false;
+
+    const states = parseFaultStates(fault);
+    if (states.has('none')) return false;
+    if (states.has('active') || states.has('active_pending')) {
+        return true;
+    }
+
+    return false;
+}
+
+export function isOngoingTelematicsFault(fault: FaultData): boolean {
+    if (!fault || fault.dismissDateTime) return false;
+    if (!isTelematicsFault(fault)) return false;
+
+    const states = parseFaultStates(fault);
+    if (states.has('none')) return false;
+    if (states.has('active') || states.has('pending') || states.has('active_pending')) {
+        return true;
+    }
+
+    return false;
+}
+
+export function isActiveExceptionCritical(exception: ExceptionEvent, nowMs = Date.now()): boolean {
+    const activeTo = exception.activeTo;
+    if (!activeTo) return true;
+    if (activeTo.startsWith('2050')) return true;
+
+    const activeToMs = new Date(activeTo).getTime();
+    if (Number.isNaN(activeToMs)) return true;
+    return activeToMs >= nowMs;
 }
 
 /**
@@ -137,7 +269,7 @@ export function classifyFaults(faults: FaultData[], exceptions: ExceptionEvent[]
  * Classify a single Exception Event (Rule Violation)
  */
 function classifyException(ex: ExceptionEvent): ClassifiedFault {
-    const isActive = !ex.activeTo || ex.activeTo.startsWith('2050');
+    const isActive = isActiveExceptionCritical(ex);
 
     // Determine Severity
     // Rule violations are generally "Events" that concern the user. 
@@ -173,7 +305,7 @@ function classifyException(ex: ExceptionEvent): ClassifiedFault {
  */
 function classifyFault(fault: FaultData): ClassifiedFault {
     const source = detectSource(fault);
-    const status = parseStatus(fault); // 'active', 'pending', 'active+pending'
+    const status = parseStatus(fault); // 'active', 'pending', 'active+pending', 'unknown'
     const bucket = detectFaultBucket(fault); // 3-bucket categorization
 
     let severity: FaultSeverity = 'info';
@@ -191,7 +323,7 @@ function classifyFault(fault: FaultData): ClassifiedFault {
             isOngoing = true; // Recent device issue = Problem
         } else {
             // Older than 7 days OR Pending -> History/Info
-            if (status.includes('active')) {
+            if (status === 'active' || status === 'active_pending') {
                 severity = 'history'; // Was active, but too old to care
             } else {
                 severity = 'info';
@@ -217,6 +349,10 @@ function classifyFault(fault: FaultData): ClassifiedFault {
             // We trust ECU "Active" state regardless of date.
             severity = 'severe'; // Treat as Severe
             isOngoing = true;
+        } else {
+            // Unknown fault-state should not be promoted into active/severe buckets.
+            severity = 'info';
+            isOngoing = false;
         }
     }
 
@@ -341,17 +477,12 @@ function detectSource(fault: FaultData): FaultSource {
  * Note: Geotab FaultData 'faultState' is often confusing.
  * For this logic, we rely on the specific string values.
  */
-function parseStatus(fault: FaultData): 'active' | 'pending' | 'active_pending' {
-    const state = (fault.faultState || '').toLowerCase();
-
-    if (state === 'pendingactive' || (state.includes('active') && state.includes('pending'))) {
-        return 'active_pending';
-    }
-    if (state === 'pending') {
-        return 'pending';
-    }
-    // Default to active if unknown, or explicit active
-    return 'active';
+function parseStatus(fault: FaultData): 'active' | 'pending' | 'active_pending' | 'unknown' {
+    const states = parseFaultStates(fault);
+    if (states.has('active_pending')) return 'active_pending';
+    if (states.has('active')) return 'active';
+    if (states.has('pending')) return 'pending';
+    return 'unknown';
 }
 
 /**

@@ -12,7 +12,7 @@ import {
     IconAntennaBars5
 } from '@tabler/icons-react';
 import type { VehicleData } from '@/types/geotab';
-import { isTelematicsFault } from '@/services/FaultService';
+import { isOngoingEngineFault, isOngoingTelematicsFault } from '@/services/FaultService';
 import { AssetHealthDashboard } from './AssetHealthDashboard';
 
 interface AssetRowProps {
@@ -72,16 +72,42 @@ export const AssetRow = memo((props: AssetRowProps) => {
     };
 
     const getVehicleFaultIconClass = (v: VehicleData): string => {
-        const vehicleFaults = (v.activeFaults || []).filter((fault) => !isTelematicsFault(fault));
-        if (!vehicleFaults.length && !v.hasCriticalFaults) return 'icon--success';
+        const engineFaults = (v.activeFaults || []).filter((fault) => isOngoingEngineFault(fault));
+        if (!engineFaults.length && !v.hasCriticalFaults) return 'icon--success';
 
-        const hasMajorKnownFault = vehicleFaults.some((fault) => {
+        const hasMajorKnownFault = engineFaults.some((fault) => {
             const severity = normalizeFaultSeverity(fault.failureMode?.severity);
             return severity === 'major';
         }) || v.hasCriticalFaults;
 
         if (hasMajorKnownFault) return 'icon--danger';
         return 'icon--warning';
+    };
+
+    const getVehicleFaultTitle = (v: VehicleData): string => {
+        const engineFaultCount = (v.activeFaults || []).filter((fault) => isOngoingEngineFault(fault)).length;
+        const exceptionCount = v.health.exceptionSummary?.activeCount ?? 0;
+
+        if (v.hasCriticalFaults) {
+            if (engineFaultCount > 0 && exceptionCount > 0) {
+                return `Critical: ${engineFaultCount} ongoing engine fault(s), ${exceptionCount} active exception rule(s)`;
+            }
+            if (engineFaultCount > 0) {
+                return `Critical: ${engineFaultCount} ongoing engine fault(s)`;
+            }
+            if (exceptionCount > 0) {
+                return `Critical via ${exceptionCount} active exception rule(s)`;
+            }
+            return 'Critical vehicle health';
+        }
+
+        if (engineFaultCount > 0) {
+            return `${engineFaultCount} ongoing engine fault(s)`;
+        }
+        if (exceptionCount > 0) {
+            return `${exceptionCount} active exception rule(s)`;
+        }
+        return 'No critical engine faults';
     };
 
     const getDvirIconClass = (v: VehicleData): string => {
@@ -100,7 +126,7 @@ export const AssetRow = memo((props: AssetRowProps) => {
         const hasSeriousDeviceIssue = deviceIssues.some((issue) => issue.priority === 'alert');
         if (hasSeriousDeviceIssue) return 'icon--danger';
 
-        const telematicsFaults = (v.activeFaults || []).filter((fault) => isTelematicsFault(fault));
+        const telematicsFaults = (v.activeFaults || []).filter((fault) => isOngoingTelematicsFault(fault));
         if (telematicsFaults.length > 0) {
             const hasMajorTelematicsFault = telematicsFaults.some((fault) => {
                 const severity = normalizeFaultSeverity(fault.failureMode?.severity);
@@ -180,7 +206,7 @@ export const AssetRow = memo((props: AssetRowProps) => {
                     ))}
                 </div>
                 <div className="asset-table__cell col-icons">
-                    <span className="status-icon-slot" title="Vehicle fault status">
+                    <span className="status-icon-slot" title={getVehicleFaultTitle(vehicle)}>
                         <IconCar size={16} className={getVehicleFaultIconClass(vehicle)} />
                     </span>
                     <span className="status-icon-slot" title={vehicle.hasUnrepairedDefects ? 'Open DVIR defects' : 'No open DVIR defects'}>

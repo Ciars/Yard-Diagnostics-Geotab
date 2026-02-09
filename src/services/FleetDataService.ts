@@ -15,7 +15,7 @@ import type {
 } from '@/types/geotab';
 import { isPointInPolygon, getPolygonBoundingBox } from '@/lib/geoUtils';
 import { calculateVehicleKpis, hoursSince } from '@/lib/vehicleHealthPredicates';
-import { isTelematicsFault } from './FaultService';
+import { isActiveExceptionCritical, isRoadworthyCriticalEngineFault } from './FaultService';
 import { VinDecoderService } from './VinDecoderService';
 import { apiCache, CacheTTL } from '@/lib/apiCache';
 
@@ -27,6 +27,17 @@ const daysSince = (isoDate: string) => {
 };
 
 const VERBOSE_FLEET_LOGS = import.meta.env.DEV && import.meta.env.VITE_VERBOSE_FLEET_LOGS === '1';
+
+interface ZoneCriticalContext {
+    faultsByDevice: Map<string, FaultData[]>;
+    exceptionCountByDevice: Map<string, number>;
+    criticalByDevice: Set<string>;
+}
+
+interface ZoneCriticalCacheEntry {
+    context: ZoneCriticalContext;
+    cachedAt: number;
+}
 
 // Helper: Parse ISO Duration or TimeSpan
 function parseDuration(duration: string): number {
@@ -82,6 +93,9 @@ export class FleetDataService {
     private static _sharedDeviceCache: Device[] | null = null;
     private static _sharedDeviceCacheTime: number = 0;
     private static _sharedDeviceFetchPromise: Promise<Device[]> | null = null;
+    private readonly ZONE_CRITICAL_CACHE_TTL_MS = 60_000;
+    private static _zoneCriticalCache = new Map<string, ZoneCriticalCacheEntry>();
+    private static _zoneCriticalFetchPromises = new Map<string, Promise<ZoneCriticalContext>>();
 
     constructor(api: IGeotabApi) {
         this.api = api;
@@ -194,6 +208,165 @@ export class FleetDataService {
             this._deviceFetchPromise = null;
             FleetDataService._sharedDeviceFetchPromise = null;
         }
+    }
+
+    private isZoneCriticalCacheFresh(entry: ZoneCriticalCacheEntry | undefined): entry is ZoneCriticalCacheEntry {
+        if (!entry) return false;
+        return (Date.now() - entry.cachedAt) < this.ZONE_CRITICAL_CACHE_TTL_MS;
+    }
+
+    private setZoneCriticalCache(zoneId: string, context: ZoneCriticalContext): void {
+        FleetDataService._zoneCriticalCache.set(zoneId, {
+            context,
+            cachedAt: Date.now()
+        });
+    }
+
+    private async getZoneCriticalContext(zoneId: string, zoneDeviceIds: Set<string>): Promise<ZoneCriticalContext> {
+        if (zoneDeviceIds.size === 0) {
+            return {
+                faultsByDevice: new Map(),
+                exceptionCountByDevice: new Map(),
+                criticalByDevice: new Set()
+            };
+        }
+
+        const cached = FleetDataService._zoneCriticalCache.get(zoneId);
+        if (this.isZoneCriticalCacheFresh(cached)) {
+            return cached.context;
+        }
+
+        const inflight = FleetDataService._zoneCriticalFetchPromises.get(zoneId);
+        if (inflight) {
+            return inflight;
+        }
+
+        const fetchPromise = this.fetchZoneCriticalContext(zoneDeviceIds, zoneId);
+        FleetDataService._zoneCriticalFetchPromises.set(zoneId, fetchPromise);
+        try {
+            const context = await fetchPromise;
+            this.setZoneCriticalCache(zoneId, context);
+            return context;
+        } finally {
+            FleetDataService._zoneCriticalFetchPromises.delete(zoneId);
+        }
+    }
+
+    private async fetchZoneCriticalContext(zoneDeviceIds: Set<string>, zoneId: string): Promise<ZoneCriticalContext> {
+        const LOOKBACK_DAYS = 30;
+        const FROM_DATE = new Date(Date.now() - LOOKBACK_DAYS * 24 * 60 * 60 * 1000).toISOString();
+        const RESULTS_LIMIT = 5000;
+
+        const faultsByDevice = new Map<string, FaultData[]>();
+        const exceptionCountByDevice = new Map<string, number>();
+        const criticalByDevice = new Set<string>();
+        const seenFaultIds = new Set<string>();
+        const seenExceptionIds = new Set<string>();
+
+        const addFault = (fault: FaultData) => {
+            const deviceId = fault.device?.id;
+            if (!deviceId || !zoneDeviceIds.has(deviceId)) return;
+            const state = (fault.faultState || '').toLowerCase();
+            if (fault.dismissDateTime || state === 'none') return;
+            if (seenFaultIds.has(fault.id)) return;
+
+            seenFaultIds.add(fault.id);
+            const bucket = faultsByDevice.get(deviceId) ?? [];
+            bucket.push(fault);
+            faultsByDevice.set(deviceId, bucket);
+
+            if (isRoadworthyCriticalEngineFault(fault)) {
+                criticalByDevice.add(deviceId);
+            }
+        };
+
+        const addException = (exception: ExceptionEvent) => {
+            const deviceId = exception.device?.id;
+            if (!deviceId || !zoneDeviceIds.has(deviceId)) return;
+            if (seenExceptionIds.has(exception.id)) return;
+            if (!isActiveExceptionCritical(exception)) return;
+
+            seenExceptionIds.add(exception.id);
+            const count = exceptionCountByDevice.get(deviceId) ?? 0;
+            exceptionCountByDevice.set(deviceId, count + 1);
+        };
+
+        const [faultsRaw, exceptionsRaw] = await Promise.all([
+            this.api.call<FaultData[]>('Get', {
+                typeName: 'FaultData',
+                search: { fromDate: FROM_DATE },
+                resultsLimit: RESULTS_LIMIT
+            }),
+            this.api.call<ExceptionEvent[]>('Get', {
+                typeName: 'ExceptionEvent',
+                search: { fromDate: FROM_DATE },
+                resultsLimit: RESULTS_LIMIT
+            })
+        ]);
+
+        faultsRaw.forEach(addFault);
+        exceptionsRaw.forEach(addException);
+
+        const reachedFaultLimit = faultsRaw.length >= RESULTS_LIMIT;
+        const reachedExceptionLimit = exceptionsRaw.length >= RESULTS_LIMIT;
+        if (reachedFaultLimit || reachedExceptionLimit) {
+            const MAX_FALLBACK_DEVICES = 300;
+            const fallbackDeviceIds = Array.from(zoneDeviceIds).slice(0, MAX_FALLBACK_DEVICES);
+            if (VERBOSE_FLEET_LOGS && zoneDeviceIds.size > MAX_FALLBACK_DEVICES) {
+                console.debug('[getVehicleDataForZone] Critical fallback device cap applied', {
+                    zoneId,
+                    requested: zoneDeviceIds.size,
+                    using: fallbackDeviceIds.length
+                });
+            }
+
+            const CALLS_PER_BATCH = 25;
+            if (reachedFaultLimit) {
+                const faultCalls = fallbackDeviceIds.map((id) => ({
+                    method: 'Get',
+                    params: {
+                        typeName: 'FaultData',
+                        search: {
+                            deviceSearch: { id },
+                            fromDate: FROM_DATE
+                        },
+                        resultsLimit: 200
+                    }
+                }));
+
+                for (let i = 0; i < faultCalls.length; i += CALLS_PER_BATCH) {
+                    const chunk = faultCalls.slice(i, i + CALLS_PER_BATCH);
+                    const batch = await this.api.multiCall<any[]>(chunk);
+                    batch.flatMap((entry) => Array.isArray(entry) ? entry : []).forEach((fault) => addFault(fault as FaultData));
+                }
+            }
+
+            if (reachedExceptionLimit) {
+                const exceptionCalls = fallbackDeviceIds.map((id) => ({
+                    method: 'Get',
+                    params: {
+                        typeName: 'ExceptionEvent',
+                        search: {
+                            deviceSearch: { id },
+                            fromDate: FROM_DATE
+                        },
+                        resultsLimit: 200
+                    }
+                }));
+
+                for (let i = 0; i < exceptionCalls.length; i += CALLS_PER_BATCH) {
+                    const chunk = exceptionCalls.slice(i, i + CALLS_PER_BATCH);
+                    const batch = await this.api.multiCall<any[]>(chunk);
+                    batch.flatMap((entry) => Array.isArray(entry) ? entry : []).forEach((exception) => addException(exception as ExceptionEvent));
+                }
+            }
+        }
+
+        return {
+            faultsByDevice,
+            exceptionCountByDevice,
+            criticalByDevice
+        };
     }
 
     private mapVideoDeviceHealthToCameraHealth(value: unknown): 'good' | 'warning' | 'critical' | undefined {
@@ -374,7 +547,11 @@ export class FleetDataService {
         statuses: DeviceStatusInfo[],
         drivers: User[],
         faults: FaultData[],
-        patchDiagnostics: StatusData[]
+        patchDiagnostics: StatusData[],
+        criticalContext?: {
+            criticalByDevice?: Set<string>;
+            exceptionCountByDevice?: Map<string, number>;
+        }
     ): VehicleData[] {
         const vehicleMap = new Map<string, VehicleData>();
         const cameras: Device[] = [];
@@ -548,6 +725,7 @@ export class FleetDataService {
                     issues: [],
                     faultAnalysis: { items: [], ongoingCount: 0, severeCount: 0, historicalCount: 0 },
                     hasRecurringIssues: false,
+                    exceptionSummary: undefined,
                     isDeviceOffline: s ? !s.isDeviceCommunicating : true,
                     lastHeartbeat: s?.dateTime
                 }
@@ -589,12 +767,27 @@ export class FleetDataService {
             const v = vehicleMap.get(f.device.id);
             if (v) {
                 v.activeFaults.push(f);
-                if (!isTelematicsFault(f)) {
+                if (isRoadworthyCriticalEngineFault(f)) {
                     v.hasCriticalFaults = true;
                     v.health.hasRecurringIssues = true;
                 }
             }
         });
+
+        const criticalByDevice = criticalContext?.criticalByDevice;
+        const exceptionCountByDevice = criticalContext?.exceptionCountByDevice;
+        if (criticalByDevice || exceptionCountByDevice) {
+            vehicleMap.forEach((vehicle, deviceId) => {
+                const exceptionCount = exceptionCountByDevice?.get(deviceId) ?? 0;
+                if (criticalByDevice?.has(deviceId)) {
+                    vehicle.hasCriticalFaults = true;
+                    vehicle.health.hasRecurringIssues = true;
+                }
+                if (exceptionCount > 0) {
+                    vehicle.health.exceptionSummary = { activeCount: exceptionCount };
+                }
+            });
+        }
 
         const vehicles = Array.from(vehicleMap.values());
 
@@ -843,6 +1036,8 @@ export class FleetDataService {
 
             const statusMap = new Map<string, DeviceStatusInfo>();
             zoneStatuses.forEach((s) => statusMap.set(s.device.id, s));
+            const zoneCriticalContext = await this.getZoneCriticalContext(zoneId, zoneDeviceIdSet);
+            const zoneFaults = Array.from(zoneCriticalContext.faultsByDevice.values()).flat();
 
             const missingVitalsDevices = zoneDevices.filter((device) => {
                 const status = statusMap.get(device.id);
@@ -877,10 +1072,6 @@ export class FleetDataService {
                 diagnosticIds: [
                     DiagnosticIds.CAMERA_ONLINE,
                     DiagnosticIds.VIDEO_DEVICE_HEALTH,
-                    DiagnosticIds.CAMERA_STATUS_ROAD,
-                    DiagnosticIds.CAMERA_STATUS_DRIVER,
-                    DiagnosticIds.CAMERA_VIBRATION,
-                    DiagnosticIds.CAMERA_SEATBELT,
                     DiagnosticIds.CHARGING_STATE,
                     DiagnosticIds.AC_INPUT_POWER
                 ],
@@ -902,7 +1093,10 @@ export class FleetDataService {
             const silentDiagnostics = [...cameraDiagnostics, ...vitalsDiagnostics];
 
             const mergeStart = Date.now();
-            const result = this.mergeData(zoneDevices, zoneStatuses, [], [], silentDiagnostics);
+            const result = this.mergeData(zoneDevices, zoneStatuses, [], zoneFaults, silentDiagnostics, {
+                criticalByDevice: zoneCriticalContext.criticalByDevice,
+                exceptionCountByDevice: zoneCriticalContext.exceptionCountByDevice
+            });
             console.log(`[getVehicleDataForZone] Merge completed in ${Date.now() - mergeStart}ms, ${result.length} vehicles`);
 
             await this.enrichVehicleMetadata(result);
@@ -1242,43 +1436,6 @@ export class FleetDataService {
                 console.warn('[enrichVehicleData] Bulk driver fetch failed:', e);
             }
 
-            const faultMap = new Map<string, FaultData[]>();
-            try {
-                const faultFromDate = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-                const faults: FaultData[] = [];
-                const calls = deviceIds.map((id) => ({
-                    method: 'Get',
-                    params: {
-                        typeName: 'FaultData',
-                        search: {
-                            fromDate: faultFromDate,
-                            deviceSearch: { id }
-                        },
-                        resultsLimit: 100
-                    }
-                }));
-
-                const CALLS_PER_BATCH = 40;
-                for (let i = 0; i < calls.length; i += CALLS_PER_BATCH) {
-                    const chunk = calls.slice(i, i + CALLS_PER_BATCH);
-                    try {
-                        const batch = await this.api.multiCall<any[]>(chunk);
-                        batch.flatMap((entry) => Array.isArray(entry) ? entry : []).forEach((f) => faults.push(f as FaultData));
-                    } catch (e) {
-                        console.warn(`[enrichVehicleData] Fault batch failed (${i}-${i + chunk.length}):`, e);
-                    }
-                }
-
-                faults.forEach((fault) => {
-                    const id = fault.device?.id;
-                    if (!id || !deviceIdSet.has(id)) return;
-                    if (!faultMap.has(id)) faultMap.set(id, []);
-                    faultMap.get(id)!.push(fault);
-                });
-            } catch (e) {
-                console.warn('[enrichVehicleData] Fault enrichment failed:', e);
-            }
-
             const dvirMap = new Map<string, VehicleData['health']['dvir']['defects']>();
             try {
                 const dvirFromDate = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
@@ -1324,16 +1481,17 @@ export class FleetDataService {
             }
 
             return vehicles.map((v) => {
-                const vehicleFaults = faultMap.get(v.device.id) ?? v.activeFaults;
+                const vehicleFaults = v.activeFaults;
                 const dvirDefects = dvirMap.get(v.device.id) ?? v.health.dvir.defects;
                 const hasUnrepairedDefects = dvirDefects.some((defect) => this.isDefectUnrepaired(defect));
                 const driverName = (v.status.driver?.id && driverMap.get(v.status.driver.id)) || v.driverName || 'No Driver';
+                const hasCriticalFaults = v.hasCriticalFaults || vehicleFaults.some((fault) => isRoadworthyCriticalEngineFault(fault));
 
                 return {
                     ...v,
                     driverName,
                     activeFaults: vehicleFaults,
-                    hasCriticalFaults: vehicleFaults.some((f) => !isTelematicsFault(f)),
+                    hasCriticalFaults,
                     hasUnrepairedDefects,
                     health: {
                         ...v.health,

@@ -5,8 +5,8 @@
  * Per UI_BLUEPRINT.md Section 2.C
  */
 
-import { useEffect, useMemo } from 'react';
-import { MapContainer, TileLayer, Polygon, CircleMarker, Popup, Tooltip, useMap } from 'react-leaflet';
+import { useEffect, useMemo, useState } from 'react';
+import { MapContainer, TileLayer, Polygon, CircleMarker, Popup, Tooltip, useMap, useMapEvents } from 'react-leaflet';
 import L from 'leaflet';
 import type { LatLngBounds } from 'leaflet';
 import {
@@ -33,7 +33,7 @@ import {
     isVehicleDormant,
     isVehicleSilent
 } from '@/lib/vehicleHealthPredicates';
-import { isTelematicsFault } from '@/services/FaultService';
+import { isOngoingEngineFault, isOngoingTelematicsFault } from '@/services/FaultService';
 import './ZoneMap.css';
 
 interface ZoneMapProps {
@@ -71,6 +71,8 @@ const MARKER_COLORS = {
     healthy: '#4AA75E'
 } as const;
 
+const LOW_DETAIL_ZOOM = 15;
+
 // Geotab Zone points use {x: lon, y: lat}
 // Leaflet expects [lat, lon]
 function convertZonePoints(zone: Zone): [number, number][] {
@@ -86,7 +88,7 @@ function hasLowBattery(vehicle: VehicleData): boolean {
 
 function hasEngineIssue(vehicle: VehicleData): boolean {
     if (vehicle.hasCriticalFaults) return true;
-    return (vehicle.activeFaults ?? []).some((fault) => !isTelematicsFault(fault));
+    return (vehicle.activeFaults ?? []).some(isOngoingEngineFault);
 }
 
 function hasTelematicsIssue(vehicle: VehicleData): boolean {
@@ -95,7 +97,7 @@ function hasTelematicsIssue(vehicle: VehicleData): boolean {
     const healthIssues = vehicle.health?.issues ?? [];
     if (healthIssues.some((issue) => issue.source === 'device')) return true;
 
-    return (vehicle.activeFaults ?? []).some(isTelematicsFault);
+    return (vehicle.activeFaults ?? []).some(isOngoingTelematicsFault);
 }
 
 function getMarkerSeverity(vehicle: VehicleData): MarkerSeverity {
@@ -152,6 +154,74 @@ function renderBadgeIcon(badge: MarkerBadge) {
     return null;
 }
 
+function getSpreadCellDegrees(zoom: number): number {
+    if (zoom >= 16) return 0.00005;
+    if (zoom >= 14) return 0.00008;
+    return 0.00012;
+}
+
+function getSpreadRadiusMeters(zoom: number): number {
+    if (zoom >= 16) return 6;
+    if (zoom >= 14) return 9;
+    return 14;
+}
+
+function getMarkerRenderPriority(marker: VehicleMarker, hoveredVehicleId: string | null): number {
+    if (marker.vehicle.device.id === hoveredVehicleId) return 100;
+    if (marker.severity === 'critical') return 30;
+    if (marker.severity === 'issue') return 20;
+    return 10;
+}
+
+function spreadMarkers(markers: VehicleMarker[], zoom: number): VehicleMarker[] {
+    const cellDegrees = getSpreadCellDegrees(zoom);
+    const groups = new Map<string, VehicleMarker[]>();
+
+    markers.forEach((marker) => {
+        const [lat, lng] = marker.center;
+        const row = Math.round(lat / cellDegrees);
+        const col = Math.round(lng / cellDegrees);
+        const key = `${row}:${col}`;
+        const existing = groups.get(key);
+        if (existing) {
+            existing.push(marker);
+            return;
+        }
+        groups.set(key, [marker]);
+    });
+
+    const spreadRadiusMeters = getSpreadRadiusMeters(zoom);
+    const result: VehicleMarker[] = [];
+
+    groups.forEach((group) => {
+        if (group.length === 1) {
+            result.push(group[0]);
+            return;
+        }
+
+        const sorted = [...group].sort((a, b) => a.vehicle.device.id.localeCompare(b.vehicle.device.id));
+        const slotsPerRing = 8;
+
+        sorted.forEach((marker, index) => {
+            const [lat, lng] = marker.center;
+            const ring = Math.floor(index / slotsPerRing);
+            const slot = index % slotsPerRing;
+            const ringRadiusMeters = spreadRadiusMeters * (ring + 1);
+            const angle = ((slot / slotsPerRing) * Math.PI * 2) + (ring * 0.35);
+            const latRadians = (lat * Math.PI) / 180;
+            const latOffset = (ringRadiusMeters / 111320) * Math.sin(angle);
+            const lngOffset = (ringRadiusMeters / (111320 * Math.max(0.2, Math.cos(latRadians)))) * Math.cos(angle);
+
+            result.push({
+                ...marker,
+                center: [lat + latOffset, lng + lngOffset]
+            });
+        });
+    });
+
+    return result;
+}
+
 // Component to handle map bounds
 function MapBoundsHandler({ bounds }: { bounds: LatLngBounds | null }) {
     const map = useMap();
@@ -161,6 +231,18 @@ function MapBoundsHandler({ bounds }: { bounds: LatLngBounds | null }) {
             map.fitBounds(bounds, { padding: [20, 20] });
         }
     }, [map, bounds]);
+
+    return null;
+}
+
+function MapZoomTracker({ onZoomChange }: { onZoomChange: (zoom: number) => void }) {
+    const map = useMapEvents({
+        zoomend: () => onZoomChange(map.getZoom())
+    });
+
+    useEffect(() => {
+        onZoomChange(map.getZoom());
+    }, [map, onZoomChange]);
 
     return null;
 }
@@ -218,6 +300,8 @@ export function ZoneMap({
     focusRequest = null,
     onVehicleClick
 }: ZoneMapProps) {
+    const [mapZoom, setMapZoom] = useState(DEFAULT_ZOOM);
+
     // Convert zone points to Leaflet format
     const zonePolygon = useMemo(() => {
         return zone ? convertZonePoints(zone) : [];
@@ -245,21 +329,26 @@ export function ZoneMap({
     }, [vehicles, filteredVehicleSet]);
 
     const markerData = useMemo<VehicleMarker[]>(() => {
-        return displayVehicles
+        const rawMarkers = displayVehicles
             .filter((vehicle) => Number.isFinite(vehicle.status.latitude) && Number.isFinite(vehicle.status.longitude))
             .map((vehicle) => {
                 const lat = vehicle.status.latitude;
                 const lng = vehicle.status.longitude;
                 return {
                     key: vehicle.device.id,
-                    center: [lat, lng],
+                    center: [lat, lng] as [number, number],
                     vehicle,
                     severity: getMarkerSeverity(vehicle),
                     core: getMarkerCore(vehicle),
                     badge: getMarkerBadge(vehicle)
                 };
             });
-    }, [displayVehicles]);
+
+        const spread = spreadMarkers(rawMarkers, mapZoom);
+        return spread.sort(
+            (a, b) => getMarkerRenderPriority(a, hoveredVehicleId) - getMarkerRenderPriority(b, hoveredVehicleId)
+        );
+    }, [displayVehicles, hoveredVehicleId, mapZoom]);
 
     if (!zone) {
         return (
@@ -290,6 +379,7 @@ export function ZoneMap({
                 <MapBoundsHandler bounds={bounds} />
                 <MapResizeHandler bounds={bounds} layoutRevision={layoutRevision} />
                 <MapFocusHandler focusRequest={focusRequest} />
+                <MapZoomTracker onZoomChange={setMapZoom} />
 
                 {/* Zone polygon */}
                 {zonePolygon.length > 2 && (
@@ -309,41 +399,51 @@ export function ZoneMap({
                     const { vehicle, severity, core, badge } = marker;
                     const isHovered = hoveredVehicleId === vehicle.device.id;
                     const markerColor = getSeverityColor(severity);
+                    const showFullGlyph = mapZoom >= LOW_DETAIL_ZOOM || severity !== 'healthy';
+                    const markerRadius = showFullGlyph
+                        ? (isHovered ? 24 : 12)
+                        : (isHovered ? 14 : 7);
+                    const markerWeight = severity === 'critical'
+                        ? (isHovered ? 8 : 6)
+                        : showFullGlyph
+                            ? (isHovered ? 6 : 4)
+                            : (isHovered ? 4 : 2);
+                    const markerFillOpacity = severity === 'healthy'
+                        ? (showFullGlyph ? (isHovered ? 0.55 : 0.38) : (isHovered ? 0.42 : 0.28))
+                        : (isHovered ? 0.8 : 0.62);
 
                     return (
                         <CircleMarker
                             key={marker.key}
                             center={marker.center}
-                            radius={isHovered ? 24 : 12}
+                            radius={markerRadius}
                             pathOptions={{
                                 color: markerColor,
                                 fillColor: markerColor,
-                                fillOpacity: severity === 'healthy'
-                                    ? (isHovered ? 0.55 : 0.38)
-                                    : (isHovered ? 0.8 : 0.62),
-                                weight: severity === 'critical'
-                                    ? (isHovered ? 8 : 6)
-                                    : (isHovered ? 6 : 4),
+                                fillOpacity: markerFillOpacity,
+                                weight: markerWeight,
                                 dashArray: severity === 'critical' ? '8 6' : undefined
                             }}
                             eventHandlers={{
                                 click: () => onVehicleClick?.(vehicle.device.id)
                             }}
                         >
-                            <Tooltip
-                                permanent
-                                direction="center"
-                                opacity={1}
-                                interactive={false}
-                                className="zone-map__marker-tooltip"
-                            >
-                                <span className={`zone-map__marker-glyph zone-map__marker-glyph--${severity}`}>
-                                    <span className="zone-map__marker-core">{renderCoreIcon(core)}</span>
-                                    {badge !== 'none' && (
-                                        <span className="zone-map__marker-badge">{renderBadgeIcon(badge)}</span>
-                                    )}
-                                </span>
-                            </Tooltip>
+                            {showFullGlyph && (
+                                <Tooltip
+                                    permanent
+                                    direction="center"
+                                    opacity={1}
+                                    interactive={false}
+                                    className="zone-map__marker-tooltip"
+                                >
+                                    <span className={`zone-map__marker-glyph zone-map__marker-glyph--${severity}`}>
+                                        <span className="zone-map__marker-core">{renderCoreIcon(core)}</span>
+                                        {badge !== 'none' && (
+                                            <span className="zone-map__marker-badge">{renderBadgeIcon(badge)}</span>
+                                        )}
+                                    </span>
+                                </Tooltip>
+                            )}
                             <Popup>
                                 <div className="marker-popup">
                                     <strong>{vehicle.device.name}</strong>

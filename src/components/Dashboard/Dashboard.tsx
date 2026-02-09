@@ -15,6 +15,7 @@ import { AssetTable } from '@/components/AssetTable/AssetTable';
 import { ZoneMap } from '@/components/Map/ZoneMap';
 import { WeatherTablet } from '@/components/Weather/WeatherTablet';
 import { useZoneWeather } from '@/hooks/useZoneWeather';
+import { useVehicleFilter } from '@/hooks/useVehicleFilter';
 import {
     IconFileDownload,
     IconRefresh,
@@ -63,6 +64,11 @@ export function Dashboard() {
 
     // Fetch vehicles for selected zone
     const { vehicles, kpis, isLoading, dataUpdatedAt, isEnriching, isFetching, isPollingActive, refetch } = useVehiclesInZone(selectedZone);
+    const filteredVehicles = useVehicleFilter(vehicles);
+    const filteredVehicleIds = useMemo(
+        () => filteredVehicles.map((vehicle) => vehicle.device.id),
+        [filteredVehicles]
+    );
     const { data: zoneWeather } = useZoneWeather(selectedZone, dataUpdatedAt);
 
     useEffect(() => {
@@ -336,6 +342,7 @@ export function Dashboard() {
                         <ZoneMap
                             zone={selectedZone}
                             vehicles={vehicles}
+                            filteredVehicleIds={filteredVehicleIds}
                             layoutRevision={mapLayoutRevision}
                             hoveredVehicleId={hoveredVehicleId}
                             focusRequest={mapFocusRequest}
