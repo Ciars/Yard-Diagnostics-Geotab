@@ -264,6 +264,10 @@
     flex-wrap: wrap;
 }
 
+.dashboard__data-status .weather-tablet {
+    margin-right: auto;
+}
+
 .dashboard__data-status .timestamp {
     display: inline-flex;
     align-items: center;
