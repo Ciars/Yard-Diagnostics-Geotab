@@ -1056,6 +1056,13 @@ export class FleetDataService {
 
             console.log(`[getVehicleDataForZone] Zone found: ${targetZone.name}, fetching lightweight data...`);
 
+            const deviceSnapshotPromise = this.getAllDevices()
+                .then((devices) => ({ devices, hasDeviceSnapshot: true as const }))
+                .catch((error) => {
+                    console.warn('[getVehicleDataForZone] Device snapshot fetch failed, using status-only fallback:', error);
+                    return { devices: [] as Device[], hasDeviceSnapshot: false as const };
+                });
+
             const fetchStart = Date.now();
             let zoneStatuses: DeviceStatusInfo[] = [];
             const filterStatusesToZone = (statuses: DeviceStatusInfo[]): DeviceStatusInfo[] => {
@@ -1102,22 +1109,7 @@ export class FleetDataService {
                 zoneStatuses = filterStatusesToZone(allStatuses);
             }
 
-            let allDevices: Device[] = [];
-            let hasDeviceSnapshot = false;
-            try {
-                const DEVICE_FETCH_BUDGET_MS = 1500;
-                const devicesOrTimeout = await Promise.race<Device[] | null>([
-                    this.getAllDevices(),
-                    new Promise<null>((resolve) => setTimeout(() => resolve(null), DEVICE_FETCH_BUDGET_MS))
-                ]);
-                if (!devicesOrTimeout) {
-                    throw new Error('Device snapshot fetch timed out');
-                }
-                allDevices = devicesOrTimeout;
-                hasDeviceSnapshot = true;
-            } catch (e) {
-                console.warn('[getVehicleDataForZone] Device snapshot fetch failed, using status-only fallback:', e);
-            }
+            const { devices: allDevices, hasDeviceSnapshot } = await deviceSnapshotPromise;
 
             const activeDeviceIdSet = new Set(allDevices.map((device) => device.id));
             if (hasDeviceSnapshot) {
@@ -1240,23 +1232,18 @@ export class FleetDataService {
      * Uses cached statuses if available (from getFleetData) to prevent duplicate API calls
      */
     async getZoneVehicleCounts(zones: Zone[]): Promise<Record<string, number>> {
-        const allStatuses = await this.getAllStatuses();
+        const [allStatuses, activeDevices] = await Promise.all([
+            this.getAllStatuses(),
+            this.getAllDevices().catch((error) => {
+                console.warn('[getZoneVehicleCounts] Active device filter unavailable, using status-only counts:', error);
+                return null as Device[] | null;
+            })
+        ]);
         let statusesForCounting = allStatuses;
 
-        try {
-            const DEVICE_FETCH_BUDGET_MS = 1200;
-            const activeDevicesOrTimeout = await Promise.race<Device[] | null>([
-                this.getAllDevices(),
-                new Promise<null>((resolve) => setTimeout(() => resolve(null), DEVICE_FETCH_BUDGET_MS))
-            ]);
-            if (activeDevicesOrTimeout) {
-                const activeDeviceIds = new Set(activeDevicesOrTimeout.map((device) => device.id));
-                statusesForCounting = allStatuses.filter((status) => activeDeviceIds.has(status.device.id));
-            } else if (VERBOSE_FLEET_LOGS) {
-                console.debug('[getZoneVehicleCounts] Active device filter timed out, using status-only counts');
-            }
-        } catch (error) {
-            console.warn('[getZoneVehicleCounts] Active device filter unavailable, using status-only counts:', error);
+        if (activeDevices) {
+            const activeDeviceIds = new Set(activeDevices.map((device) => device.id));
+            statusesForCounting = allStatuses.filter((status) => activeDeviceIds.has(status.device.id));
         }
 
         const counts: Record<string, number> = {};
