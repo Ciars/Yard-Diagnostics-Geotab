@@ -9,6 +9,7 @@ import type {
     FaultData,
     VehicleData,
     Zone,
+    ZoneType,
     StatusData,
     DiagnosticId,
     ExceptionEvent
@@ -223,6 +224,17 @@ export class FleetDataService {
             this._deviceFetchPromise = null;
             FleetDataService._sharedDeviceFetchPromise = null;
         }
+    }
+
+    private isZoneTypeHome(zoneType: Pick<ZoneType, 'id' | 'name' | 'comment'> | undefined): boolean {
+        if (!zoneType) return false;
+
+        const normalizedId = (zoneType.id || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+        if (normalizedId === 'zonetypehomeid') return true;
+
+        const name = (zoneType.name || '').trim();
+        const comment = (zoneType.comment || '').trim();
+        return /\bhome\b/i.test(name) || /\bhome\b/i.test(comment);
     }
 
     private isZoneCriticalCacheFresh(entry: ZoneCriticalCacheEntry | undefined): entry is ZoneCriticalCacheEntry {
@@ -932,17 +944,33 @@ export class FleetDataService {
             return cached;
         }
 
-        // Fetch from API
-        const zones = await this.api.call<Zone[]>('Get', {
-            typeName: 'Zone',
-            resultsLimit: 50000
+        const [zones, zoneTypes] = await Promise.all([
+            this.api.call<Zone[]>('Get', {
+                typeName: 'Zone',
+                resultsLimit: 50000
+            }),
+            this.api.call<ZoneType[]>('Get', {
+                typeName: 'ZoneType',
+                resultsLimit: 50000
+            }).catch((error) => {
+                console.warn('[getZones] Failed to fetch ZoneType metadata, using ID/name fallback:', error);
+                return [] as ZoneType[];
+            })
+        ]);
+
+        const homeZoneTypeIds = new Set<string>(['ZoneTypeHomeId']);
+        zoneTypes.forEach((zoneType) => {
+            if (this.isZoneTypeHome(zoneType) && zoneType.id) {
+                homeZoneTypeIds.add(zoneType.id);
+            }
         });
 
         const filtered = zones
             .filter(z => {
-                // Remove zones that are categorized as "Home" using official ZoneType ID
-                // This avoids filtering by the string "Home" in the name itself
-                const isHomeZone = z.zoneTypes?.some(t => t.id === 'ZoneTypeHomeId');
+                const isHomeZone = (z.zoneTypes ?? []).some((zoneType) => {
+                    if (zoneType.id && homeZoneTypeIds.has(zoneType.id)) return true;
+                    return this.isZoneTypeHome(zoneType);
+                });
                 return !isHomeZone;
             })
             .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));

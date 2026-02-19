@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { FleetDataService } from '@/services/FleetDataService';
+import { apiCache } from '@/lib/apiCache';
 import type { Device, DeviceStatusInfo, ExceptionEvent, FaultData, VehicleData, Zone } from '@/types/geotab';
 
 const ZONE: Zone = {
@@ -67,17 +68,22 @@ function createApiMock(options?: {
     fallbackFault?: FaultData;
     devices?: Device[];
     statuses?: DeviceStatusInfo[];
+    zones?: Zone[];
+    zoneTypes?: Array<{ id: string; name?: string; comment?: string }>;
 }) {
     const faults = options?.faults ?? [];
     const exceptions = options?.exceptions ?? [];
     const fallbackFault = options?.fallbackFault;
     const devices = options?.devices ?? [DEVICE];
     const statuses = options?.statuses ?? [STATUS];
+    const zones = options?.zones ?? [ZONE];
+    const zoneTypes = options?.zoneTypes ?? [];
     const multiCallBatches: Array<Array<{ method: string; params: Record<string, unknown> }>> = [];
 
     const call = vi.fn(async (_method: string, params: Record<string, unknown>) => {
         const typeName = params.typeName as string | undefined;
-        if (typeName === 'Zone') return [ZONE];
+        if (typeName === 'Zone') return zones;
+        if (typeName === 'ZoneType') return zoneTypes;
         if (typeName === 'DeviceStatusInfo') return statuses;
         if (typeName === 'Device') return devices;
         if (typeName === 'FaultData') return faults;
@@ -135,6 +141,7 @@ function createVehicle(): VehicleData {
 
 describe('FleetDataService critical context', () => {
     beforeEach(() => {
+        apiCache.clear();
         (FleetDataService as any)._zoneCriticalCache.clear();
         (FleetDataService as any)._zoneCriticalFetchPromises.clear();
         (FleetDataService as any)._sharedDeviceCache = null;
@@ -237,6 +244,43 @@ describe('FleetDataService critical context', () => {
         expect(result[0].activeFaults.length).toBe(0);
     });
 
+    it('excludes only zones with Home zone type metadata (not by zone name)', async () => {
+        const homeTypeGuid = 'type-home-guid';
+        const yardTypeGuid = 'type-yard-guid';
+
+        const homeByIdZone: Zone = {
+            id: 'zone-home-id',
+            name: 'HQ Storage Yard',
+            points: ZONE.points,
+            zoneTypes: [{ id: 'ZoneTypeHomeId' }]
+        };
+        const homeByTypeNameZone: Zone = {
+            id: 'zone-home-type-name',
+            name: 'Residential Fleet Yard',
+            points: ZONE.points,
+            zoneTypes: [{ id: homeTypeGuid }]
+        };
+        const keepZoneWithHomeInName: Zone = {
+            id: 'zone-business',
+            name: 'Circet Home Aberdeen',
+            points: ZONE.points,
+            zoneTypes: [{ id: yardTypeGuid }]
+        };
+
+        const { api } = createApiMock({
+            zones: [homeByIdZone, homeByTypeNameZone, keepZoneWithHomeInName],
+            zoneTypes: [
+                { id: homeTypeGuid, name: 'Home' },
+                { id: yardTypeGuid, name: 'Customer Yard' }
+            ]
+        });
+        const service = new FleetDataService(api as any);
+
+        const zones = await service.getZones();
+
+        expect(zones.map((zone) => zone.id)).toEqual(['zone-business']);
+    });
+
     it('uses fallback per-device fetch when aggregate fault result limit is hit', async () => {
         const overflowFaults = Array.from({ length: 5000 }, (_, index) => createFault({
             id: `overflow-${index}`,
@@ -258,6 +302,7 @@ describe('FleetDataService critical context', () => {
 
 describe('FleetDataService enrichment performance shape', () => {
     beforeEach(() => {
+        apiCache.clear();
         (FleetDataService as any)._zoneCriticalCache.clear();
         (FleetDataService as any)._zoneCriticalFetchPromises.clear();
         (FleetDataService as any)._sharedDeviceCache = null;
@@ -282,6 +327,7 @@ describe('FleetDataService enrichment performance shape', () => {
 
 describe('FleetDataService zone count parity', () => {
     beforeEach(() => {
+        apiCache.clear();
         (FleetDataService as any)._zoneCriticalCache.clear();
         (FleetDataService as any)._zoneCriticalFetchPromises.clear();
         (FleetDataService as any)._sharedDeviceCache = null;
