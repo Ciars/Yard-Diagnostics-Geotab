@@ -101,6 +101,20 @@ export class FleetDataService {
         this.api = api;
     }
 
+    private isDeviceActiveNow(device: Device, nowMs = Date.now()): boolean {
+        const activeFromMs = device.activeFrom ? new Date(device.activeFrom).getTime() : undefined;
+        if (activeFromMs !== undefined && Number.isFinite(activeFromMs) && activeFromMs > nowMs) {
+            return false;
+        }
+
+        const activeToMs = device.activeTo ? new Date(device.activeTo).getTime() : undefined;
+        if (activeToMs !== undefined && Number.isFinite(activeToMs) && activeToMs < nowMs) {
+            return false;
+        }
+
+        return true;
+    }
+
     private isStatusCacheFresh(timestamp: number): boolean {
         return (Date.now() - timestamp) < this.STATUS_CACHE_TTL_MS;
     }
@@ -202,8 +216,9 @@ export class FleetDataService {
 
         try {
             const devices = await fetchPromise;
-            this.cacheDevices(devices);
-            return devices;
+            const activeDevices = devices.filter((device) => this.isDeviceActiveNow(device));
+            this.cacheDevices(activeDevices);
+            return activeDevices;
         } finally {
             this._deviceFetchPromise = null;
             FleetDataService._sharedDeviceFetchPromise = null;
@@ -1007,14 +1022,28 @@ export class FleetDataService {
                 zoneStatuses = filterStatusesToZone(allStatuses);
             }
 
-            const zoneDeviceIds = zoneStatuses.map((s) => s.device.id);
             let allDevices: Device[] = [];
+            let hasDeviceSnapshot = false;
             try {
                 allDevices = await this.getAllDevices();
+                hasDeviceSnapshot = true;
             } catch (e) {
                 console.warn('[getVehicleDataForZone] Device snapshot fetch failed, using status-only fallback:', e);
             }
-            const zoneDeviceIdSet = new Set(zoneDeviceIds);
+
+            const activeDeviceIdSet = new Set(allDevices.map((device) => device.id));
+            if (hasDeviceSnapshot) {
+                const beforeActiveFilter = zoneStatuses.length;
+                zoneStatuses = zoneStatuses.filter((status) => activeDeviceIdSet.has(status.device.id));
+                if (VERBOSE_FLEET_LOGS && beforeActiveFilter !== zoneStatuses.length) {
+                    console.debug('[getVehicleDataForZone] Filtered inactive devices from zone status set', {
+                        before: beforeActiveFilter,
+                        after: zoneStatuses.length
+                    });
+                }
+            }
+
+            const zoneDeviceIdSet = new Set(zoneStatuses.map((s) => s.device.id));
             const devices = allDevices.filter((d) => zoneDeviceIdSet.has(d.id));
 
             console.log(`[getVehicleDataForZone] Fast fetch completed in ${Date.now() - fetchStart}ms:`, {
@@ -1024,14 +1053,15 @@ export class FleetDataService {
 
             // Ensure we always have a device object for each zone status, even if Device lookup partially fails.
             const deviceById = new Map(devices.map((d) => [d.id, d]));
-            const zoneDevices = zoneStatuses.map((status) => {
+            const zoneDevices = zoneStatuses.flatMap((status) => {
                 const existing = deviceById.get(status.device.id);
-                if (existing) return existing;
-                return {
+                if (existing) return [existing];
+                if (hasDeviceSnapshot) return [];
+                return [{
                     id: status.device.id,
                     name: status.device.name || status.device.id,
                     serialNumber: ''
-                } as Device;
+                } as Device];
             });
 
             const statusMap = new Map<string, DeviceStatusInfo>();
@@ -1123,6 +1153,15 @@ export class FleetDataService {
      */
     async getZoneVehicleCounts(zones: Zone[]): Promise<Record<string, number>> {
         const allStatuses = await this.getAllStatuses();
+        let statusesForCounting = allStatuses;
+
+        try {
+            const activeDevices = await this.getAllDevices();
+            const activeDeviceIds = new Set(activeDevices.map((device) => device.id));
+            statusesForCounting = allStatuses.filter((status) => activeDeviceIds.has(status.device.id));
+        } catch (error) {
+            console.warn('[getZoneVehicleCounts] Active device filter unavailable, using status-only counts:', error);
+        }
 
         const counts: Record<string, number> = {};
         zones.forEach((z) => {
@@ -1135,7 +1174,7 @@ export class FleetDataService {
             bbox: getPolygonBoundingBox(zone.points ?? [])
         }));
 
-        for (const status of allStatuses) {
+        for (const status of statusesForCounting) {
             const lat = status.latitude;
             const lng = status.longitude;
 
@@ -1405,6 +1444,27 @@ export class FleetDataService {
         return defects;
     }
 
+    private getLatestDvirInspectionAt(logs: unknown[]): string | undefined {
+        if (!Array.isArray(logs) || logs.length === 0) return undefined;
+
+        let latestMs = Number.NEGATIVE_INFINITY;
+        let latestIso: string | undefined;
+
+        logs.forEach((entry) => {
+            const log = entry as Record<string, unknown>;
+            const raw = log.dateTime ?? log.date;
+            if (typeof raw !== 'string') return;
+            const ms = new Date(raw).getTime();
+            if (Number.isNaN(ms)) return;
+            if (ms > latestMs) {
+                latestMs = ms;
+                latestIso = raw;
+            }
+        });
+
+        return latestIso;
+    }
+
 
     /**
      * BACKGROUND ENRICHMENT: Fetch drivers and faults for the given vehicles.
@@ -1437,6 +1497,7 @@ export class FleetDataService {
             }
 
             const dvirMap = new Map<string, VehicleData['health']['dvir']['defects']>();
+            const latestDvirInspectionMap = new Map<string, string>();
             try {
                 const dvirFromDate = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
                 const dvirLogs: any[] = [];
@@ -1475,6 +1536,10 @@ export class FleetDataService {
                 vehicles.forEach((vehicle) => {
                     const logs = logsByDevice.get(vehicle.device.id) ?? [];
                     dvirMap.set(vehicle.device.id, this.extractDvirDefects(logs, vehicle.driverName));
+                    const latestInspectionAt = this.getLatestDvirInspectionAt(logs);
+                    if (latestInspectionAt) {
+                        latestDvirInspectionMap.set(vehicle.device.id, latestInspectionAt);
+                    }
                 });
             } catch (e) {
                 console.warn('[enrichVehicleData] DVIR enrichment failed (non-critical):', e);
@@ -1494,13 +1559,14 @@ export class FleetDataService {
                     hasCriticalFaults,
                     hasUnrepairedDefects,
                     health: {
-                        ...v.health,
-                        dvir: {
-                            defects: dvirDefects,
-                            isClean: !hasUnrepairedDefects
-                        }
-                    }
-                };
+                                ...v.health,
+                                dvir: {
+                                    defects: dvirDefects,
+                                    isClean: !hasUnrepairedDefects,
+                                    lastInspectionAt: latestDvirInspectionMap.get(v.device.id) ?? v.health.dvir.lastInspectionAt
+                                }
+                            }
+                        };
             });
 
         } catch (error) {

@@ -10,13 +10,9 @@ import { MapContainer, TileLayer, Polygon, CircleMarker, Popup, Tooltip, useMap,
 import L from 'leaflet';
 import type { LatLngBounds } from 'leaflet';
 import {
-    IconAntennaBarsOff,
     IconAlertTriangle,
-    IconBatteryExclamation,
     IconBolt,
-    IconCameraOff,
     IconCar,
-    IconEngine,
     IconMap2,
     IconMoonStars,
     IconPlugConnected,
@@ -33,7 +29,7 @@ import {
     isVehicleDormant,
     isVehicleSilent
 } from '@/lib/vehicleHealthPredicates';
-import { isOngoingEngineFault, isOngoingTelematicsFault } from '@/services/FaultService';
+import { assessTelematicsHealth, isOngoingEngineFault } from '@/services/FaultService';
 import './ZoneMap.css';
 
 interface ZoneMapProps {
@@ -54,7 +50,6 @@ interface ZoneMapProps {
 
 type MarkerSeverity = 'healthy' | 'issue' | 'critical';
 type MarkerCore = 'vehicle' | 'charging' | 'dormant' | 'offline';
-type MarkerBadge = 'none' | 'engine' | 'telematics' | 'camera' | 'battery';
 
 interface VehicleMarker {
     key: string;
@@ -62,7 +57,6 @@ interface VehicleMarker {
     vehicle: VehicleData;
     severity: MarkerSeverity;
     core: MarkerCore;
-    badge: MarkerBadge;
 }
 
 const MARKER_COLORS = {
@@ -72,6 +66,20 @@ const MARKER_COLORS = {
 } as const;
 
 const LOW_DETAIL_ZOOM = 15;
+
+function isVehicleDeviceActiveNow(vehicle: VehicleData, nowMs = Date.now()): boolean {
+    const activeFromMs = vehicle.device.activeFrom ? new Date(vehicle.device.activeFrom).getTime() : undefined;
+    if (activeFromMs !== undefined && Number.isFinite(activeFromMs) && activeFromMs > nowMs) {
+        return false;
+    }
+
+    const activeToMs = vehicle.device.activeTo ? new Date(vehicle.device.activeTo).getTime() : undefined;
+    if (activeToMs !== undefined && Number.isFinite(activeToMs) && activeToMs < nowMs) {
+        return false;
+    }
+
+    return true;
+}
 
 // Geotab Zone points use {x: lon, y: lat}
 // Leaflet expects [lat, lon]
@@ -92,12 +100,7 @@ function hasEngineIssue(vehicle: VehicleData): boolean {
 }
 
 function hasTelematicsIssue(vehicle: VehicleData): boolean {
-    if (isVehicleSilent(vehicle)) return true;
-
-    const healthIssues = vehicle.health?.issues ?? [];
-    if (healthIssues.some((issue) => issue.source === 'device')) return true;
-
-    return (vehicle.activeFaults ?? []).some(isOngoingTelematicsFault);
+    return assessTelematicsHealth(vehicle.status, vehicle.activeFaults ?? []).level !== 'good';
 }
 
 function getMarkerSeverity(vehicle: VehicleData): MarkerSeverity {
@@ -125,14 +128,6 @@ function getMarkerCore(vehicle: VehicleData): MarkerCore {
     return 'vehicle';
 }
 
-function getMarkerBadge(vehicle: VehicleData): MarkerBadge {
-    if (hasEngineIssue(vehicle)) return 'engine';
-    if (hasTelematicsIssue(vehicle)) return 'telematics';
-    if (hasVehicleCameraIssue(vehicle)) return 'camera';
-    if (hasLowBattery(vehicle)) return 'battery';
-    return 'none';
-}
-
 function getSeverityColor(severity: MarkerSeverity): string {
     if (severity === 'critical') return MARKER_COLORS.critical;
     if (severity === 'issue') return MARKER_COLORS.issue;
@@ -144,14 +139,6 @@ function renderCoreIcon(core: MarkerCore) {
     if (core === 'dormant') return <IconMoonStars size={24} stroke={2.2} />;
     if (core === 'offline') return <IconWifiOff size={24} stroke={2.2} />;
     return <IconCar size={24} stroke={2.2} />;
-}
-
-function renderBadgeIcon(badge: MarkerBadge) {
-    if (badge === 'engine') return <IconEngine size={10} stroke={2.2} />;
-    if (badge === 'telematics') return <IconAntennaBarsOff size={10} stroke={2.2} />;
-    if (badge === 'camera') return <IconCameraOff size={10} stroke={2.2} />;
-    if (badge === 'battery') return <IconBatteryExclamation size={10} stroke={2.2} />;
-    return null;
 }
 
 function getSpreadCellDegrees(zoom: number): number {
@@ -322,10 +309,11 @@ export function ZoneMap({
     }, [filteredVehicleIds]);
 
     const displayVehicles = useMemo(() => {
+        const activeVehicles = vehicles.filter((vehicle) => isVehicleDeviceActiveNow(vehicle));
         if (!filteredVehicleSet) {
-            return vehicles;
+            return activeVehicles;
         }
-        return vehicles.filter((v) => filteredVehicleSet.has(v.device.id));
+        return activeVehicles.filter((v) => filteredVehicleSet.has(v.device.id));
     }, [vehicles, filteredVehicleSet]);
 
     const markerData = useMemo<VehicleMarker[]>(() => {
@@ -339,8 +327,7 @@ export function ZoneMap({
                     center: [lat, lng] as [number, number],
                     vehicle,
                     severity: getMarkerSeverity(vehicle),
-                    core: getMarkerCore(vehicle),
-                    badge: getMarkerBadge(vehicle)
+                    core: getMarkerCore(vehicle)
                 };
             });
 
@@ -396,7 +383,7 @@ export function ZoneMap({
 
                 {/* Vehicle markers */}
                 {markerData.map((marker) => {
-                    const { vehicle, severity, core, badge } = marker;
+                    const { vehicle, severity, core } = marker;
                     const isHovered = hoveredVehicleId === vehicle.device.id;
                     const markerColor = getSeverityColor(severity);
                     const showFullGlyph = mapZoom >= LOW_DETAIL_ZOOM || severity !== 'healthy';
@@ -438,9 +425,6 @@ export function ZoneMap({
                                 >
                                     <span className={`zone-map__marker-glyph zone-map__marker-glyph--${severity}`}>
                                         <span className="zone-map__marker-core">{renderCoreIcon(core)}</span>
-                                        {badge !== 'none' && (
-                                            <span className="zone-map__marker-badge">{renderBadgeIcon(badge)}</span>
-                                        )}
                                     </span>
                                 </Tooltip>
                             )}

@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { VehicleData, ExtendedDiagnostics, GeotabSession } from '@/types/geotab';
-import { ClassifiedFault } from '@/services/FaultService';
+import { assessTelematicsHealth, ClassifiedFault } from '@/services/FaultService';
 import './AssetHealthDashboard.css';
 import { formatBatteryVoltage, getBatteryStatusIndicator, analyzeCameraDiagnostics } from '@/services/HealthService';
 import { useAssetHealth } from '@/hooks/useAssetHealth'; // New Hook
@@ -75,6 +75,8 @@ export const AssetHealthDashboard: React.FC<AssetHealthDashboardProps> = ({ vehi
     const ongoingFaults: ClassifiedFault[] = analysis.items.filter((f: ClassifiedFault) => f.isOngoing);
     const severeCount = analysis.severeCount;
     const openDvirDefects = getOpenDvirDefectGroups(vehicle);
+    const telematicsHealth = assessTelematicsHealth(status, faults);
+    const recentDeviceFaults = telematicsHealth.relevantFaults.slice(0, 8);
 
     return (
         <div className="ah-dashboard">
@@ -254,15 +256,21 @@ export const AssetHealthDashboard: React.FC<AssetHealthDashboardProps> = ({ vehi
 
                         <div className="ah-device-faults-section">
                             <h4>Device Faults</h4>
-                            {analysis.items.filter((f: ClassifiedFault) => f.source === 'device' && f.isOngoing).length === 0
-                                ? <span className="ah-empty-text">System healthy</span>
-                                : analysis.items.filter((f: ClassifiedFault) => f.source === 'device' && f.isOngoing).map((f: ClassifiedFault) => (
-                                    <div key={f.id} className="ah-device-fault-row">
-                                        <IconCircleFilled size={8} color="#dc2626" />
-                                        <span>{f.description}</span>
+                            {recentDeviceFaults.length === 0 ? (
+                                <span className="ah-empty-text">
+                                    {telematicsHealth.level === 'good' ? 'System healthy' : telematicsHealth.reason}
+                                </span>
+                            ) : (
+                                recentDeviceFaults.map((fault) => (
+                                    <div key={fault.id} className="ah-device-fault-row">
+                                        <IconCircleFilled
+                                            size={8}
+                                            color={telematicsHealth.severeFaults.some((f) => f.id === fault.id) ? '#dc2626' : '#d97706'}
+                                        />
+                                        <span>{getDeviceFaultLabel(fault)}</span>
                                     </div>
                                 ))
-                            }
+                            )}
                         </div>
                     </div>
 
@@ -437,6 +445,14 @@ function isDvirOpen(defect: VehicleData['health']['dvir']['defects'][number]): b
     if (defect.isRepaired === true) return false;
     if (defect.repairStatus === 'Repaired' || defect.repairStatus === 'NotNecessary') return false;
     return true;
+}
+
+function getDeviceFaultLabel(fault: VehicleData['activeFaults'][number]): string {
+    const diagnosticName = fault.diagnostic?.name?.trim();
+    if (diagnosticName && diagnosticName.toLowerCase() !== 'unknown fault') return diagnosticName;
+    const failureModeName = fault.failureMode?.name?.trim();
+    if (failureModeName && failureModeName.toLowerCase() !== 'unknown') return failureModeName;
+    return 'Telematics fault';
 }
 
 function getOpenDvirDefectGroups(vehicle: VehicleData): DvirDefectGroup[] {

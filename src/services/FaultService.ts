@@ -66,7 +66,29 @@ const TELEMATICS_NAME_KEYWORDS = [
 ];
 const CRITICAL_FAILURE_SEVERITIES = new Set(['critical']);
 const BREAKDOWN_RISK_CRITICAL_THRESHOLD = 75;
+const TELEMATICS_WARNING_HEARTBEAT_HOURS = 72;
+const TELEMATICS_CRITICAL_HEARTBEAT_HOURS = 168;
+const TELEMATICS_RECENT_WARNING_FAULT_HOURS = 24;
+const TELEMATICS_RECENT_CRITICAL_FAULT_HOURS = 72;
+const TELEMATICS_RECURRING_WINDOW_HOURS = 168;
+const TELEMATICS_RECURRING_FAULT_COUNT = 3;
+const MAJOR_TELEMATICS_SEVERITIES = new Set(['critical', 'severe', 'high']);
 type ParsedFaultState = 'active' | 'pending' | 'active_pending' | 'none' | 'unknown';
+
+export type TelematicsHealthLevel = 'good' | 'warning' | 'critical';
+
+export interface TelematicsStatusSnapshot {
+    isDeviceCommunicating?: boolean;
+    dateTime?: string;
+}
+
+export interface TelematicsHealthAssessment {
+    level: TelematicsHealthLevel;
+    reason: string;
+    heartbeatAgeHours: number;
+    relevantFaults: FaultData[];
+    severeFaults: FaultData[];
+}
 
 export function isTelematicsFault(fault: FaultData): boolean {
     const diagId = fault.diagnostic?.id || '';
@@ -213,6 +235,130 @@ export function isOngoingTelematicsFault(fault: FaultData): boolean {
     }
 
     return false;
+}
+
+function getFaultAgeHours(fault: FaultData, nowMs: number): number {
+    const faultMs = new Date(fault.dateTime).getTime();
+    if (Number.isNaN(faultMs)) return Number.POSITIVE_INFINITY;
+    return Math.max(0, (nowMs - faultMs) / (1000 * 60 * 60));
+}
+
+function isMajorTelematicsFault(fault: FaultData): boolean {
+    const severity = (fault.failureMode?.severity || '').toLowerCase();
+    if (MAJOR_TELEMATICS_SEVERITIES.has(severity)) return true;
+
+    const raw = fault as unknown as Record<string, unknown>;
+    return (
+        toBooleanSignal(raw.redStopLamp) ||
+        toBooleanSignal(raw.RedStopLamp) ||
+        toBooleanSignal(raw.protectWarningLamp) ||
+        toBooleanSignal(raw.ProtectWarningLamp)
+    );
+}
+
+export function assessTelematicsHealth(
+    status: TelematicsStatusSnapshot | undefined,
+    faults: FaultData[] = [],
+    nowMs = Date.now()
+): TelematicsHealthAssessment {
+    const lastHeardMs = status?.dateTime ? new Date(status.dateTime).getTime() : Number.NaN;
+    const heartbeatAgeHours = Number.isNaN(lastHeardMs)
+        ? Number.POSITIVE_INFINITY
+        : Math.max(0, (nowMs - lastHeardMs) / (1000 * 60 * 60));
+    const isCommunicating = status?.isDeviceCommunicating !== false;
+
+    const actionableTelematicsFaults = faults
+        .filter((fault) => !fault.dismissDateTime && isTelematicsFault(fault))
+        .filter((fault) => {
+            const states = parseFaultStates(fault);
+            if (states.has('none')) return false;
+            // Pending-only device faults are noisy for list health and do not degrade icon state.
+            return states.has('active') || states.has('active_pending');
+        })
+        .map((fault) => ({ fault, ageHours: getFaultAgeHours(fault, nowMs) }))
+        .filter(({ ageHours }) => ageHours <= TELEMATICS_RECURRING_WINDOW_HOURS);
+
+    const relevantFaults = actionableTelematicsFaults
+        .map(({ fault }) => fault)
+        .sort((a, b) => new Date(b.dateTime).getTime() - new Date(a.dateTime).getTime());
+
+    const recentWarningFaults = actionableTelematicsFaults.filter(
+        ({ ageHours }) => ageHours <= TELEMATICS_RECENT_WARNING_FAULT_HOURS
+    );
+    const severeFaults = actionableTelematicsFaults
+        .filter(
+            ({ fault, ageHours }) =>
+                ageHours <= TELEMATICS_RECENT_CRITICAL_FAULT_HOURS && isMajorTelematicsFault(fault)
+        )
+        .map(({ fault }) => fault);
+
+    if (heartbeatAgeHours >= TELEMATICS_CRITICAL_HEARTBEAT_HOURS) {
+        return {
+            level: 'critical',
+            reason: `No heartbeat for ${Math.round(heartbeatAgeHours)}h`,
+            heartbeatAgeHours,
+            relevantFaults,
+            severeFaults
+        };
+    }
+
+    if (severeFaults.length > 0) {
+        return {
+            level: 'critical',
+            reason: `${severeFaults.length} recent severe telematics fault(s)`,
+            heartbeatAgeHours,
+            relevantFaults,
+            severeFaults
+        };
+    }
+
+    if (!isCommunicating) {
+        return {
+            level: 'warning',
+            reason: 'Device currently not communicating',
+            heartbeatAgeHours,
+            relevantFaults,
+            severeFaults
+        };
+    }
+
+    if (heartbeatAgeHours >= TELEMATICS_WARNING_HEARTBEAT_HOURS) {
+        return {
+            level: 'warning',
+            reason: `Heartbeat stale (${Math.round(heartbeatAgeHours)}h)`,
+            heartbeatAgeHours,
+            relevantFaults,
+            severeFaults
+        };
+    }
+
+    if (recentWarningFaults.length > 0) {
+        return {
+            level: 'warning',
+            reason: `${recentWarningFaults.length} recent telematics fault(s)`,
+            heartbeatAgeHours,
+            relevantFaults,
+            severeFaults
+        };
+    }
+
+    if (relevantFaults.length >= TELEMATICS_RECURRING_FAULT_COUNT) {
+        return {
+            level: 'warning',
+            reason: `Recurring telematics faults (${relevantFaults.length} in 7d)`,
+            heartbeatAgeHours,
+            relevantFaults,
+            severeFaults
+        };
+    }
+
+    return {
+        level: 'good',
+        reason: 'Device healthy',
+        heartbeatAgeHours,
+        relevantFaults,
+        severeFaults
+    };
 }
 
 export function isActiveExceptionCritical(exception: ExceptionEvent, nowMs = Date.now()): boolean {

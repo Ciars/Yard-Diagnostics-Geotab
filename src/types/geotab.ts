@@ -13,6 +13,8 @@ export interface Device {
     id: string;
     name: string;
     serialNumber: string;
+    activeFrom?: string;
+    activeTo?: string;
     vehicleIdentificationNumber?: string;
     licensePlate?: string;
     deviceType?: string;
@@ -567,6 +569,8 @@ export interface VehicleData {
                 certifiedBy?: string;
             }>;
             isClean: boolean;
+            /** Latest DVIR log timestamp for this asset (if available) */
+            lastInspectionAt?: string;
         };
         // New strict fault analysis
         faultAnalysis?: {

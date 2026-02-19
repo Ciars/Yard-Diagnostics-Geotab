@@ -12,7 +12,7 @@ import {
     IconAntennaBars5
 } from '@tabler/icons-react';
 import type { VehicleData } from '@/types/geotab';
-import { isOngoingEngineFault, isOngoingTelematicsFault } from '@/services/FaultService';
+import { assessTelematicsHealth, isOngoingEngineFault } from '@/services/FaultService';
 import { AssetHealthDashboard } from './AssetHealthDashboard';
 
 interface AssetRowProps {
@@ -111,32 +111,51 @@ export const AssetRow = memo((props: AssetRowProps) => {
     };
 
     const getDvirIconClass = (v: VehicleData): string => {
-        return v.hasUnrepairedDefects ? 'icon--danger' : 'icon--success';
+        const RECENT_DVIR_HOURS = 24;
+        if (v.hasUnrepairedDefects) return 'icon--danger';
+
+        const lastInspectionAt = v.health.dvir.lastInspectionAt;
+        if (!lastInspectionAt) return 'icon--muted';
+
+        const inspectedAtMs = new Date(lastInspectionAt).getTime();
+        if (Number.isNaN(inspectedAtMs)) return 'icon--muted';
+
+        const ageHours = (Date.now() - inspectedAtMs) / (1000 * 60 * 60);
+        // Keep amber reserved for actionable defects only. Older checks are informational, not a fault.
+        return ageHours <= RECENT_DVIR_HOURS ? 'icon--success' : 'icon--muted';
+    };
+
+    const getDvirTitle = (v: VehicleData): string => {
+        if (v.hasUnrepairedDefects) return 'Open DVIR defects';
+
+        const lastInspectionAt = v.health.dvir.lastInspectionAt;
+        if (!lastInspectionAt) return 'No recent DVIR check logged';
+
+        const inspectedAtMs = new Date(lastInspectionAt).getTime();
+        if (Number.isNaN(inspectedAtMs)) return 'DVIR check timestamp unavailable';
+
+        const ageHours = (Date.now() - inspectedAtMs) / (1000 * 60 * 60);
+        const roundedHours = Math.max(0, Math.round(ageHours));
+        const checkedAt = new Date(inspectedAtMs).toLocaleString();
+
+        if (ageHours <= 24) {
+            return `DVIR checked ${roundedHours}h ago (${checkedAt})`;
+        }
+
+        return `Last DVIR check ${roundedHours}h ago (${checkedAt})`;
     };
 
     const getTelematicsIconClass = (v: VehicleData): string => {
-        const lastHeardAt = v.status?.dateTime ? new Date(v.status.dateTime).getTime() : 0;
-        const hoursSinceHeartbeat = lastHeardAt ? (Date.now() - lastHeardAt) / (1000 * 60 * 60) : Number.POSITIVE_INFINITY;
-        const NOT_COMMUNICATING_RED_HOURS = 72;
-        if (!v.status.isDeviceCommunicating || hoursSinceHeartbeat >= NOT_COMMUNICATING_RED_HOURS) {
-            return 'icon--danger';
-        }
-
-        const deviceIssues = v.health.issues.filter((issue) => issue.source === 'device');
-        const hasSeriousDeviceIssue = deviceIssues.some((issue) => issue.priority === 'alert');
-        if (hasSeriousDeviceIssue) return 'icon--danger';
-
-        const telematicsFaults = (v.activeFaults || []).filter((fault) => isOngoingTelematicsFault(fault));
-        if (telematicsFaults.length > 0) {
-            const hasMajorTelematicsFault = telematicsFaults.some((fault) => {
-                const severity = normalizeFaultSeverity(fault.failureMode?.severity);
-                return severity === 'major' || (fault.faultState || '').toLowerCase().includes('active');
-            });
-            return hasMajorTelematicsFault ? 'icon--danger' : 'icon--warning';
-        }
-
-        if (deviceIssues.length > 0) return 'icon--warning';
+        const assessment = assessTelematicsHealth(v.status, v.activeFaults ?? []);
+        if (assessment.level === 'critical') return 'icon--danger';
+        if (assessment.level === 'warning') return 'icon--warning';
         return 'icon--success';
+    };
+
+    const getTelematicsTitle = (v: VehicleData): string => {
+        const assessment = assessTelematicsHealth(v.status, v.activeFaults ?? []);
+        if (assessment.level === 'good') return 'Telematics healthy';
+        return `${assessment.reason}${assessment.relevantFaults.length > 0 ? ` · ${assessment.relevantFaults.length} recent fault(s)` : ''}`;
     };
 
     const getCameraIconClass = (v: VehicleData): string => {
@@ -209,10 +228,10 @@ export const AssetRow = memo((props: AssetRowProps) => {
                     <span className="status-icon-slot" title={getVehicleFaultTitle(vehicle)}>
                         <IconCar size={16} className={getVehicleFaultIconClass(vehicle)} />
                     </span>
-                    <span className="status-icon-slot" title={vehicle.hasUnrepairedDefects ? 'Open DVIR defects' : 'No open DVIR defects'}>
+                    <span className="status-icon-slot" title={getDvirTitle(vehicle)}>
                         <IconClipboardCheck size={16} className={getDvirIconClass(vehicle)} />
                     </span>
-                    <span className="status-icon-slot" title="Telematics device health">
+                    <span className="status-icon-slot" title={getTelematicsTitle(vehicle)}>
                         <IconAntennaBars5 size={16} className={getTelematicsIconClass(vehicle)} />
                     </span>
                     <span

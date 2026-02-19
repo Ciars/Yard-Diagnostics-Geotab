@@ -31,6 +31,11 @@ const STATUS: DeviceStatusInfo = {
     isDriving: false
 };
 
+const STATUS_TWO: DeviceStatusInfo = {
+    ...STATUS,
+    device: { id: 'device-2', name: 'Vehicle 2' }
+};
+
 function createFault(overrides: Partial<FaultData> = {}): FaultData {
     return {
         id: overrides.id ?? `fault-${Math.random()}`,
@@ -60,17 +65,21 @@ function createApiMock(options?: {
     faults?: FaultData[];
     exceptions?: ExceptionEvent[];
     fallbackFault?: FaultData;
+    devices?: Device[];
+    statuses?: DeviceStatusInfo[];
 }) {
     const faults = options?.faults ?? [];
     const exceptions = options?.exceptions ?? [];
     const fallbackFault = options?.fallbackFault;
+    const devices = options?.devices ?? [DEVICE];
+    const statuses = options?.statuses ?? [STATUS];
     const multiCallBatches: Array<Array<{ method: string; params: Record<string, unknown> }>> = [];
 
     const call = vi.fn(async (_method: string, params: Record<string, unknown>) => {
         const typeName = params.typeName as string | undefined;
         if (typeName === 'Zone') return [ZONE];
-        if (typeName === 'DeviceStatusInfo') return [STATUS];
-        if (typeName === 'Device') return [DEVICE];
+        if (typeName === 'DeviceStatusInfo') return statuses;
+        if (typeName === 'Device') return devices;
         if (typeName === 'FaultData') return faults;
         if (typeName === 'ExceptionEvent') return exceptions;
         if (typeName === 'User') return [];
@@ -128,6 +137,12 @@ describe('FleetDataService critical context', () => {
     beforeEach(() => {
         (FleetDataService as any)._zoneCriticalCache.clear();
         (FleetDataService as any)._zoneCriticalFetchPromises.clear();
+        (FleetDataService as any)._sharedDeviceCache = null;
+        (FleetDataService as any)._sharedDeviceCacheTime = 0;
+        (FleetDataService as any)._sharedDeviceFetchPromise = null;
+        (FleetDataService as any)._sharedStatusCache = null;
+        (FleetDataService as any)._sharedStatusCacheTime = 0;
+        (FleetDataService as any)._sharedStatusFetchPromise = null;
     });
 
     it('marks vehicle critical for old engine Active fault', async () => {
@@ -165,6 +180,24 @@ describe('FleetDataService critical context', () => {
         const result = await service.getVehicleDataForZone(ZONE.id);
 
         expect(result[0].hasCriticalFaults).toBe(false);
+    });
+
+    it('filters out inactive archived devices from zone results', async () => {
+        const inactiveDevice: Device = {
+            id: DEVICE.id,
+            name: DEVICE.name,
+            serialNumber: DEVICE.serialNumber,
+            activeTo: '2020-01-01T00:00:00.000Z'
+        };
+        const { api } = createApiMock({
+            devices: [inactiveDevice],
+            statuses: [STATUS]
+        });
+        const service = new FleetDataService(api as any);
+
+        const result = await service.getVehicleDataForZone(ZONE.id);
+
+        expect(result).toHaveLength(0);
     });
 
     it('does not mark low-severity active engine faults as critical', async () => {
@@ -227,6 +260,12 @@ describe('FleetDataService enrichment performance shape', () => {
     beforeEach(() => {
         (FleetDataService as any)._zoneCriticalCache.clear();
         (FleetDataService as any)._zoneCriticalFetchPromises.clear();
+        (FleetDataService as any)._sharedDeviceCache = null;
+        (FleetDataService as any)._sharedDeviceCacheTime = 0;
+        (FleetDataService as any)._sharedDeviceFetchPromise = null;
+        (FleetDataService as any)._sharedStatusCache = null;
+        (FleetDataService as any)._sharedStatusCacheTime = 0;
+        (FleetDataService as any)._sharedStatusFetchPromise = null;
     });
 
     it('does not issue per-device FaultData calls during enrichment', async () => {
@@ -238,5 +277,42 @@ describe('FleetDataService enrichment performance shape', () => {
         const allCalls = multiCallBatches.flat();
         const hasFaultDataCall = allCalls.some((entry) => entry.params.typeName === 'FaultData');
         expect(hasFaultDataCall).toBe(false);
+    });
+});
+
+describe('FleetDataService zone count parity', () => {
+    beforeEach(() => {
+        (FleetDataService as any)._zoneCriticalCache.clear();
+        (FleetDataService as any)._zoneCriticalFetchPromises.clear();
+        (FleetDataService as any)._sharedDeviceCache = null;
+        (FleetDataService as any)._sharedDeviceCacheTime = 0;
+        (FleetDataService as any)._sharedDeviceFetchPromise = null;
+        (FleetDataService as any)._sharedStatusCache = null;
+        (FleetDataService as any)._sharedStatusCacheTime = 0;
+        (FleetDataService as any)._sharedStatusFetchPromise = null;
+    });
+
+    it('counts only active devices in zone badge totals', async () => {
+        const activeDevice: Device = {
+            id: DEVICE.id,
+            name: DEVICE.name,
+            serialNumber: DEVICE.serialNumber
+        };
+        const inactiveDevice: Device = {
+            id: 'device-2',
+            name: 'Vehicle 2',
+            serialNumber: 'SN-2',
+            activeTo: '2020-01-01T00:00:00.000Z'
+        };
+
+        const { api } = createApiMock({
+            devices: [activeDevice, inactiveDevice],
+            statuses: [STATUS, STATUS_TWO]
+        });
+        const service = new FleetDataService(api as any);
+
+        const counts = await service.getZoneVehicleCounts([ZONE]);
+
+        expect(counts[ZONE.id]).toBe(1);
     });
 });

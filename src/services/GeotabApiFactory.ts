@@ -4,7 +4,7 @@
  * Abstract interface implemented by both ProductionApiAdapter and DevAuthShim
  */
 
-import type { ApiCall, GeotabSession } from '@/types/geotab';
+import type { ApiCall, GeotabCredentials, GeotabSession } from '@/types/geotab';
 
 export interface IGeotabApi {
     /**
@@ -106,10 +106,13 @@ export class GeotabApiFactory {
 
         // Priority: Check if we are explicitly in Dev mode first.
         const isDev = import.meta.env.DEV;
-        const allowDevAuthShim = import.meta.env.VITE_ENABLE_DEV_AUTH_SHIM === '1';
+        const allowDevAuthShim = isDev || import.meta.env.VITE_ENABLE_DEV_AUTH_SHIM === '1';
         const inIframe = typeof window !== 'undefined' && window.self !== window.top;
+        const isLocalhost = typeof window !== 'undefined'
+            && ['localhost', '127.0.0.1', '::1'].includes(window.location.hostname);
+        const canUseDevShim = allowDevAuthShim || (isLocalhost && !inIframe);
 
-        if (isDev || allowDevAuthShim) {
+        if (canUseDevShim) {
             // DEV in iframe/Add-In contexts: strongly prefer injected portal API.
             if (this.isApiReady() || this.isGeotabContext() || inIframe) {
                 try {
@@ -126,23 +129,19 @@ export class GeotabApiFactory {
                 }
             }
 
-            // Local standalone: use credential-based shim.
-            const { DevAuthShim } = await import('./DevAuthShim');
-            const credentials = {
-                server: import.meta.env.VITE_GEOTAB_SERVER || 'my.geotab.com',
-                database: import.meta.env.VITE_GEOTAB_DATABASE,
-                userName: import.meta.env.VITE_GEOTAB_USERNAME,
-                password: import.meta.env.VITE_GEOTAB_PASSWORD,
-            };
-
-            if (!credentials.database || !credentials.userName || !credentials.password) {
-                console.warn(
-                    '[GeotabApiFactory] Missing credentials for Dev Mode. ' +
-                    'Please configure .env.local if you are running locally.'
-                );
+            // Local standalone: use credential-based shim only when explicitly enabled.
+            const credentials = await this.getDevShimCredentials();
+            if (credentials) {
+                const { DevAuthShim } = await import('./DevAuthShim');
+                return DevAuthShim.create(credentials);
             }
 
-            return DevAuthShim.create(credentials);
+            if (allowDevAuthShim || isLocalhost) {
+                console.warn(
+                    '[GeotabApiFactory] DevAuthShim requested but credentials are unavailable. ' +
+                    'Configure .env.local and use local auth mode.'
+                );
+            }
         }
 
         // Production Mode: in Add-In/iframe scenarios, wait for injected API even if context signals are late.
@@ -160,6 +159,17 @@ export class GeotabApiFactory {
         // If we reach here, we are in Production build but not in Geotab context.
         // We cannot fallback to DevAuthShim because we don't have credentials in production build.
         throw new Error('Geotab API not detected. Please ensure you are running inside MyGeotab or use Development mode.');
+    }
+
+    private static async getDevShimCredentials(): Promise<GeotabCredentials | null> {
+        // Security: keep VITE_GEOTAB_* references in a dedicated module so deployment builds
+        // can tree-shake credential access when local auth shim is not enabled.
+        if (!(import.meta.env.DEV || import.meta.env.VITE_ENABLE_DEV_AUTH_SHIM === '1')) {
+            return null;
+        }
+
+        const { getDevShimCredentials } = await import('./devShimCredentials');
+        return getDevShimCredentials();
     }
 
     private static waitForApi(timeoutMs = 10_000): Promise<any> {

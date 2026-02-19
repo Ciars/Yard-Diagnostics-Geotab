@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { isActiveExceptionCritical, isOngoingEngineFault, isRoadworthyCriticalEngineFault } from '@/services/FaultService';
+import {
+    assessTelematicsHealth,
+    isActiveExceptionCritical,
+    isOngoingEngineFault,
+    isRoadworthyCriticalEngineFault
+} from '@/services/FaultService';
 import type { ExceptionEvent, FaultData } from '@/types/geotab';
 
 function createFault(overrides: Partial<FaultData> = {}): FaultData {
@@ -114,5 +119,55 @@ describe('isActiveExceptionCritical', () => {
     it('returns false for expired exceptions', () => {
         const exception = createException({ activeTo: '2024-01-01T00:00:00.000Z' });
         expect(isActiveExceptionCritical(exception, new Date('2026-01-01T00:00:00.000Z').getTime())).toBe(false);
+    });
+});
+
+describe('assessTelematicsHealth', () => {
+    it('keeps telemetry green for communicating device with no recent actionable faults', () => {
+        const assessment = assessTelematicsHealth(
+            { isDeviceCommunicating: true, dateTime: new Date().toISOString() },
+            []
+        );
+        expect(assessment.level).toBe('good');
+    });
+
+    it('does not downgrade for pending-only telematics fault', () => {
+        const pendingTelematics = createFault({
+            diagnostic: { id: 'DiagnosticDeviceUnpluggedId', name: 'Device unplugged' },
+            controller: { id: 'controller-2', name: 'Telematics Device' },
+            failureMode: { id: 'fm-2', source: 'Telematics', severity: 'Warning' },
+            faultState: 'Pending',
+            dateTime: new Date().toISOString()
+        });
+
+        const assessment = assessTelematicsHealth(
+            { isDeviceCommunicating: true, dateTime: new Date().toISOString() },
+            [pendingTelematics]
+        );
+        expect(assessment.level).toBe('good');
+    });
+
+    it('flags warning for recent active telematics fault', () => {
+        const activeTelematics = createFault({
+            diagnostic: { id: 'DiagnosticDeviceUnpluggedId', name: 'Device unplugged' },
+            controller: { id: 'controller-2', name: 'Telematics Device' },
+            failureMode: { id: 'fm-2', source: 'Telematics', severity: 'Warning' },
+            faultState: 'Active',
+            dateTime: new Date().toISOString()
+        });
+
+        const assessment = assessTelematicsHealth(
+            { isDeviceCommunicating: true, dateTime: new Date().toISOString() },
+            [activeTelematics]
+        );
+        expect(assessment.level).toBe('warning');
+    });
+
+    it('flags critical for stale heartbeat beyond 7 days', () => {
+        const assessment = assessTelematicsHealth(
+            { isDeviceCommunicating: false, dateTime: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString() },
+            []
+        );
+        expect(assessment.level).toBe('critical');
     });
 });

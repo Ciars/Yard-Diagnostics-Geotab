@@ -156,22 +156,6 @@
     filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.2));
 }
 
-.zone-map__marker-badge {
-    position: absolute;
-    top: -8px;
-    right: -10px;
-    width: 24px;
-    height: 24px;
-    border-radius: 50%;
-    background: #ffffff;
-    color: #1f2833;
-    border: 1px solid rgba(31, 40, 51, 0.2);
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
-}
-
 .zone-map__marker-glyph--healthy {
     color: rgba(255, 255, 255, 0.95);
 }
