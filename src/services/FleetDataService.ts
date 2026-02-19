@@ -90,7 +90,7 @@ export class FleetDataService {
     private _deviceCache: Device[] | null = null;
     private _deviceCacheTime: number = 0;
     private _deviceFetchPromise: Promise<Device[]> | null = null;
-    private readonly DEVICE_CACHE_TTL_MS = 5 * 60_000; // 5 minutes
+    private readonly DEVICE_CACHE_TTL_MS = 15 * 60_000; // 15 minutes
     private static _sharedDeviceCache: Device[] | null = null;
     private static _sharedDeviceCacheTime: number = 0;
     private static _sharedDeviceFetchPromise: Promise<Device[]> | null = null;
@@ -184,16 +184,21 @@ export class FleetDataService {
     }
 
     private async getAllDevices(): Promise<Device[]> {
-        if (this._deviceCache && this.isDeviceCacheFresh(this._deviceCacheTime)) {
+        if (this._deviceCache) {
+            if (!this.isDeviceCacheFresh(this._deviceCacheTime)) {
+                // Return stale cache immediately and refresh in background.
+                void this.refreshAllDevices();
+            }
             return this._deviceCache;
         }
 
-        if (
-            FleetDataService._sharedDeviceCache &&
-            this.isDeviceCacheFresh(FleetDataService._sharedDeviceCacheTime)
-        ) {
+        if (FleetDataService._sharedDeviceCache) {
             this._deviceCache = FleetDataService._sharedDeviceCache;
             this._deviceCacheTime = FleetDataService._sharedDeviceCacheTime;
+            if (!this.isDeviceCacheFresh(FleetDataService._sharedDeviceCacheTime)) {
+                // Shared stale cache still gives us fast UI; refresh asynchronously.
+                void this.refreshAllDevices();
+            }
             return FleetDataService._sharedDeviceCache;
         }
 
@@ -201,6 +206,19 @@ export class FleetDataService {
             return this._deviceFetchPromise;
         }
 
+        if (FleetDataService._sharedDeviceFetchPromise) {
+            const sharedDevices = await FleetDataService._sharedDeviceFetchPromise;
+            this.cacheDevices(sharedDevices);
+            return sharedDevices;
+        }
+
+        return this.refreshAllDevices();
+    }
+
+    private async refreshAllDevices(): Promise<Device[]> {
+        if (this._deviceFetchPromise) {
+            return this._deviceFetchPromise;
+        }
         if (FleetDataService._sharedDeviceFetchPromise) {
             const sharedDevices = await FleetDataService._sharedDeviceFetchPromise;
             this.cacheDevices(sharedDevices);
@@ -226,15 +244,40 @@ export class FleetDataService {
         }
     }
 
+    private normalizeZoneTypeEntry(entry: unknown): Pick<ZoneType, 'id' | 'name' | 'comment'> | undefined {
+        if (typeof entry === 'string') {
+            return { id: entry };
+        }
+        if (!entry || typeof entry !== 'object') {
+            return undefined;
+        }
+
+        const raw = entry as Record<string, unknown>;
+        const id = typeof raw.id === 'string' ? raw.id : undefined;
+        const name = typeof raw.name === 'string' ? raw.name : undefined;
+        const comment = typeof raw.comment === 'string' ? raw.comment : undefined;
+
+        if (!id && !name && !comment) {
+            return undefined;
+        }
+
+        return { id: id ?? '', name, comment };
+    }
+
+    private zoneTypeIdMatchesHome(zoneTypeId: string | undefined): boolean {
+        if (!zoneTypeId) return false;
+        const normalized = zoneTypeId.toLowerCase().replace(/[^a-z0-9]/g, '');
+        return normalized === 'zonetypehomeid';
+    }
+
     private isZoneTypeHome(zoneType: Pick<ZoneType, 'id' | 'name' | 'comment'> | undefined): boolean {
         if (!zoneType) return false;
 
-        const normalizedId = (zoneType.id || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-        if (normalizedId === 'zonetypehomeid') return true;
+        if (this.zoneTypeIdMatchesHome(zoneType.id)) return true;
 
-        const name = (zoneType.name || '').trim();
-        const comment = (zoneType.comment || '').trim();
-        return /\bhome\b/i.test(name) || /\bhome\b/i.test(comment);
+        const name = (zoneType.name || '').trim().toLowerCase();
+        // Keep this strict: user requested exclusion by Zone Type "Home", not fuzzy name/comment matches.
+        return name === 'home';
     }
 
     private isZoneCriticalCacheFresh(entry: ZoneCriticalCacheEntry | undefined): entry is ZoneCriticalCacheEntry {
@@ -937,6 +980,7 @@ export class FleetDataService {
      */
     async getZones(): Promise<Zone[]> {
         const CACHE_KEY = 'zones';
+        const HOME_ZONE_TYPE_IDS_CACHE_KEY = 'home-zone-type-ids';
 
         // Check cache first
         const cached = apiCache.get<Zone[]>(CACHE_KEY);
@@ -944,31 +988,39 @@ export class FleetDataService {
             return cached;
         }
 
-        const [zones, zoneTypes] = await Promise.all([
-            this.api.call<Zone[]>('Get', {
-                typeName: 'Zone',
-                resultsLimit: 50000
-            }),
-            this.api.call<ZoneType[]>('Get', {
+        const zones = await this.api.call<Zone[]>('Get', {
+            typeName: 'Zone',
+            resultsLimit: 50000
+        });
+
+        const cachedHomeZoneTypeIds = apiCache.get<string[]>(HOME_ZONE_TYPE_IDS_CACHE_KEY);
+        const homeZoneTypeIds = new Set<string>(cachedHomeZoneTypeIds ?? ['ZoneTypeHomeId']);
+        if (!cachedHomeZoneTypeIds) {
+            const rawZoneTypes = await this.api.call<unknown[]>('Get', {
                 typeName: 'ZoneType',
                 resultsLimit: 50000
             }).catch((error) => {
                 console.warn('[getZones] Failed to fetch ZoneType metadata, using ID/name fallback:', error);
-                return [] as ZoneType[];
-            })
-        ]);
+                return [] as unknown[];
+            });
 
-        const homeZoneTypeIds = new Set<string>(['ZoneTypeHomeId']);
-        zoneTypes.forEach((zoneType) => {
-            if (this.isZoneTypeHome(zoneType) && zoneType.id) {
-                homeZoneTypeIds.add(zoneType.id);
-            }
-        });
+            rawZoneTypes.forEach((zoneTypeEntry) => {
+                const zoneType = this.normalizeZoneTypeEntry(zoneTypeEntry);
+                if (this.isZoneTypeHome(zoneType) && zoneType?.id) {
+                    homeZoneTypeIds.add(zoneType.id);
+                }
+            });
+
+            apiCache.set(HOME_ZONE_TYPE_IDS_CACHE_KEY, Array.from(homeZoneTypeIds), CacheTTL.MEDIUM);
+        }
 
         const filtered = zones
             .filter(z => {
-                const isHomeZone = (z.zoneTypes ?? []).some((zoneType) => {
-                    if (zoneType.id && homeZoneTypeIds.has(zoneType.id)) return true;
+                const isHomeZone = (z.zoneTypes ?? []).some((zoneTypeEntry) => {
+                    const zoneType = this.normalizeZoneTypeEntry(zoneTypeEntry);
+                    if (zoneType?.id && (homeZoneTypeIds.has(zoneType.id) || this.zoneTypeIdMatchesHome(zoneType.id))) {
+                        return true;
+                    }
                     return this.isZoneTypeHome(zoneType);
                 });
                 return !isHomeZone;
@@ -1053,7 +1105,15 @@ export class FleetDataService {
             let allDevices: Device[] = [];
             let hasDeviceSnapshot = false;
             try {
-                allDevices = await this.getAllDevices();
+                const DEVICE_FETCH_BUDGET_MS = 1500;
+                const devicesOrTimeout = await Promise.race<Device[] | null>([
+                    this.getAllDevices(),
+                    new Promise<null>((resolve) => setTimeout(() => resolve(null), DEVICE_FETCH_BUDGET_MS))
+                ]);
+                if (!devicesOrTimeout) {
+                    throw new Error('Device snapshot fetch timed out');
+                }
+                allDevices = devicesOrTimeout;
                 hasDeviceSnapshot = true;
             } catch (e) {
                 console.warn('[getVehicleDataForZone] Device snapshot fetch failed, using status-only fallback:', e);
@@ -1184,9 +1244,17 @@ export class FleetDataService {
         let statusesForCounting = allStatuses;
 
         try {
-            const activeDevices = await this.getAllDevices();
-            const activeDeviceIds = new Set(activeDevices.map((device) => device.id));
-            statusesForCounting = allStatuses.filter((status) => activeDeviceIds.has(status.device.id));
+            const DEVICE_FETCH_BUDGET_MS = 1200;
+            const activeDevicesOrTimeout = await Promise.race<Device[] | null>([
+                this.getAllDevices(),
+                new Promise<null>((resolve) => setTimeout(() => resolve(null), DEVICE_FETCH_BUDGET_MS))
+            ]);
+            if (activeDevicesOrTimeout) {
+                const activeDeviceIds = new Set(activeDevicesOrTimeout.map((device) => device.id));
+                statusesForCounting = allStatuses.filter((status) => activeDeviceIds.has(status.device.id));
+            } else if (VERBOSE_FLEET_LOGS) {
+                console.debug('[getZoneVehicleCounts] Active device filter timed out, using status-only counts');
+            }
         } catch (error) {
             console.warn('[getZoneVehicleCounts] Active device filter unavailable, using status-only counts:', error);
         }

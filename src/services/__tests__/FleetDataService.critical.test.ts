@@ -69,7 +69,7 @@ function createApiMock(options?: {
     devices?: Device[];
     statuses?: DeviceStatusInfo[];
     zones?: Zone[];
-    zoneTypes?: Array<{ id: string; name?: string; comment?: string }>;
+    zoneTypes?: unknown[];
 }) {
     const faults = options?.faults ?? [];
     const exceptions = options?.exceptions ?? [];
@@ -279,6 +279,30 @@ describe('FleetDataService critical context', () => {
         const zones = await service.getZones();
 
         expect(zones.map((zone) => zone.id)).toEqual(['zone-business']);
+    });
+
+    it('excludes Home zones when ZoneType payload contains built-in string ids', async () => {
+        const keepZone: Zone = {
+            id: 'zone-keep',
+            name: 'Circet Home Operations',
+            points: ZONE.points,
+            zoneTypes: [{ id: 'type-yard', name: 'Yard' }]
+        };
+        const homeZone: Zone = {
+            id: 'zone-home',
+            name: 'Residential',
+            points: ZONE.points,
+            zoneTypes: ['ZoneTypeHomeId' as unknown as any]
+        } as unknown as Zone;
+
+        const { api } = createApiMock({
+            zones: [keepZone, homeZone],
+            zoneTypes: ['ZoneTypeHomeId' as unknown as any]
+        });
+        const service = new FleetDataService(api as any);
+
+        const zones = await service.getZones();
+        expect(zones.map((zone) => zone.id)).toEqual(['zone-keep']);
     });
 
     it('uses fallback per-device fetch when aggregate fault result limit is hit', async () => {
