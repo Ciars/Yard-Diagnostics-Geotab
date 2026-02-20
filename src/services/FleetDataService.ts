@@ -878,12 +878,28 @@ export class FleetDataService {
 
         if (readings.length === 0) return undefined;
 
-        // Sort by dateTime descending, take latest
-        const latest = readings.sort((a, b) =>
+        // Sort by dateTime descending, take latest numeric value
+        const sorted = readings.sort((a, b) =>
             new Date(b.dateTime).getTime() - new Date(a.dateTime).getTime()
-        )[0];
+        );
 
-        return latest.data;
+        for (const reading of sorted) {
+            const parsed = this.toFiniteNumber(reading.data);
+            if (parsed !== undefined) {
+                return parsed;
+            }
+        }
+
+        return undefined;
+    }
+
+    private toFiniteNumber(value: unknown): number | undefined {
+        if (typeof value === 'number' && Number.isFinite(value)) return value;
+        if (typeof value === 'string' && value.trim() !== '') {
+            const parsed = Number(value);
+            if (Number.isFinite(parsed)) return parsed;
+        }
+        return undefined;
     }
 
     /**
@@ -903,7 +919,12 @@ export class FleetDataService {
 
         if (voltageReadings.length === 0) return 100; // Default healthy if no data
 
-        const voltages = voltageReadings.map(r => r.data);
+        const voltages = voltageReadings
+            .map(r => this.toFiniteNumber(r.data))
+            .filter((v): v is number => v !== undefined);
+
+        if (voltages.length === 0) return 100;
+
         const avgVoltage = voltages.reduce((a, b) => a + b, 0) / voltages.length;
 
         // Scoring algorithm
@@ -1312,18 +1333,22 @@ export class FleetDataService {
             resultsLimit: 5000 // Safety Limit
         });
 
-        // 3. Recent Status Snapshots (Last 7 Days for context)
-        const statusIds = [
-            'DiagnosticInternalDeviceVoltageId',
-            'DiagnosticFuelLevelId',
-            'DiagnosticStateOfChargeId',
-            'DiagnosticOdometerId',
+        // 3. Status snapshots split by expected update frequency.
+        // Slow-changing metrics (odometer/engine hours/DEF) need a wider window.
+        const historicalStatusIds = [
+            DiagnosticIds.ODOMETER,
             DiagnosticIds.ENGINE_HOURS,
-            DiagnosticIds.DEF_LEVEL,
+            DiagnosticIds.DEF_LEVEL
+        ].filter(Boolean);
+
+        const recentStatusIds = [
+            DiagnosticIds.BATTERY_VOLTAGE,
+            DiagnosticIds.FUEL_LEVEL,
+            DiagnosticIds.STATE_OF_CHARGE,
             DiagnosticIds.COOLANT_TEMP,
             DiagnosticIds.ENGINE_SPEED,
-            'DiagnosticDeviceUnpluggedId',
-            // Camera Specifics
+            DiagnosticIds.DEVICE_UNPLUGGED,
+            // Camera specifics
             DiagnosticIds.CAMERA_STATUS_ROAD,
             DiagnosticIds.CAMERA_STATUS_DRIVER,
             DiagnosticIds.VIDEO_DEVICE_HEALTH,
@@ -1355,7 +1380,8 @@ export class FleetDataService {
             }
         };
 
-        const statusFromDate = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+        const recentStatusFromDate = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+        const historicalStatusFromDate = new Date(Date.now() - 180 * 24 * 60 * 60 * 1000).toISOString();
 
         // Execute Calls Safely
         let faults: FaultData[] = [];
@@ -1372,7 +1398,10 @@ export class FleetDataService {
 
         // Context Data (Non-Critical) - Parallel Individual Calls
         try {
-            const statusPromises = statusIds.map(id => fetchSafe(id, statusFromDate, 100));
+            const statusPromises = [
+                ...historicalStatusIds.map(id => fetchSafe(id, historicalStatusFromDate, 250)),
+                ...recentStatusIds.map(id => fetchSafe(id, recentStatusFromDate, 100))
+            ];
             const statusResults = await Promise.all(statusPromises);
             statusData = statusResults.flat();
         } catch (e) {
@@ -1438,6 +1467,7 @@ export class FleetDataService {
             defLevel: this.getLatestDiagnosticValue(statusData, DiagnosticIds.DEF_LEVEL),
             coolantTemp: this.getLatestDiagnosticValue(statusData, DiagnosticIds.COOLANT_TEMP),
             engineSpeed: this.getLatestDiagnosticValue(statusData, DiagnosticIds.ENGINE_SPEED),
+            batteryVoltage: this.getLatestDiagnosticValue(statusData, DiagnosticIds.BATTERY_VOLTAGE),
             electricalSystemRating: this.calculateESR(statusData)
         };
 

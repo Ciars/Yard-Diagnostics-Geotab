@@ -348,10 +348,12 @@ interface DiagnosticsGridProps {
 }
 
 const DiagnosticsGrid: React.FC<DiagnosticsGridProps> = ({ diagnostics, vehicle }) => {
+    const batteryVoltage = diagnostics?.batteryVoltage ?? vehicle.batteryVoltage;
+
     const items = [
         {
             label: 'Odometer',
-            value: diagnostics?.odometer ? `${Math.round(diagnostics.odometer).toLocaleString()} km` : 'N/A',
+            value: diagnostics?.odometer !== undefined ? `${Math.round(diagnostics.odometer).toLocaleString()} km` : 'N/A',
             icon: IconRoute
         },
         {
@@ -389,8 +391,8 @@ const DiagnosticsGrid: React.FC<DiagnosticsGridProps> = ({ diagnostics, vehicle 
         },
         {
             label: 'Battery Voltage',
-            value: vehicle.batteryVoltage !== undefined
-                ? `${vehicle.batteryVoltage.toFixed(1)} V`
+            value: batteryVoltage !== undefined
+                ? `${batteryVoltage.toFixed(1)} V`
                 : 'N/A',
             icon: IconBattery
         }

@@ -535,6 +535,8 @@ export interface ExtendedDiagnostics {
     coolantTemp?: number;
     /** Current engine speed in RPM */
     engineSpeed?: number;
+    /** Battery voltage in volts */
+    batteryVoltage?: number;
     /** Electrical System Rating - calculated health score (0-100) */
     electricalSystemRating?: number;
 }
