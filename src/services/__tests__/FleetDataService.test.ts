@@ -192,6 +192,20 @@ describe('VIN metadata enrichment', () => {
     });
 });
 
+describe('odometer normalization', () => {
+    it('converts StatusData odometer meters to kilometers by default', () => {
+        const service = new FleetDataService({} as any);
+        const normalized = (service as any).normalizeStatusOdometerKm(67230000);
+        expect(normalized).toBe(67230);
+    });
+
+    it('returns undefined for negative odometer values', () => {
+        const service = new FleetDataService({} as any);
+        const normalized = (service as any).normalizeStatusOdometerKm(-10);
+        expect(normalized).toBeUndefined();
+    });
+});
+
 // Helper to create mock vehicle data
 function createMockVehicle(overrides: Partial<{
     hasCriticalFaults: boolean;

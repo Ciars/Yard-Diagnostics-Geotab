@@ -902,6 +902,20 @@ export class FleetDataService {
         return undefined;
     }
 
+    private normalizeStatusOdometerKm(rawValue: number | undefined): number | undefined {
+        if (rawValue === undefined) return undefined;
+        if (rawValue < 0) return undefined;
+
+        // Geotab StatusData odometer (DiagnosticOdometerId) is generally returned in meters.
+        // Allow explicit override for tenant-specific behavior.
+        const configuredUnit = (import.meta.env.VITE_ODOMETER_STATUSDATA_UNIT || 'm').toLowerCase();
+        if (configuredUnit === 'km') {
+            return rawValue;
+        }
+
+        return rawValue / 1000;
+    }
+
     /**
      * Calculate Electrical System Rating (ESR) based on battery voltage health
      * Algorithm:
@@ -1461,8 +1475,9 @@ export class FleetDataService {
         }
 
         // --- EXTENDED DIAGNOSTICS CALCULATION ---
+        const rawOdometer = this.getLatestDiagnosticValue(statusData, DiagnosticIds.ODOMETER);
         const extendedDiagnostics = {
-            odometer: this.getLatestDiagnosticValue(statusData, DiagnosticIds.ODOMETER),
+            odometer: this.normalizeStatusOdometerKm(rawOdometer),
             engineHours: this.getLatestDiagnosticValue(statusData, DiagnosticIds.ENGINE_HOURS),
             defLevel: this.getLatestDiagnosticValue(statusData, DiagnosticIds.DEF_LEVEL),
             coolantTemp: this.getLatestDiagnosticValue(statusData, DiagnosticIds.COOLANT_TEMP),
