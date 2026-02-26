@@ -62,7 +62,7 @@ export const AssetHealthDashboard: React.FC<AssetHealthDashboardProps> = ({ vehi
                     @keyframes spin { to { transform: rotate(360deg); } }
                 `}</style>
                 <div className="ah-spinner"></div>
-                <span>Analyzing deep diagnostic history (Last 3 Months)...</span>
+                <span>Analyzing deep diagnostic history (Last 30 Days)...</span>
             </div>
         );
     }
@@ -104,7 +104,7 @@ export const AssetHealthDashboard: React.FC<AssetHealthDashboardProps> = ({ vehi
                 <div className="ah-debug-panel" style={{ background: '#111', padding: '10px', margin: '10px 0', borderRadius: '4px', overflow: 'auto', maxHeight: '300px', fontSize: '11px', fontFamily: 'monospace' }}>
                     <h4 style={{ margin: '0 0 10px 0', color: '#fff', display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
                         <IconSearch size={14} />
-                        Raw Geotab Data (Last 3 Months)
+                        Raw Geotab Data (Last 30 Days)
                     </h4>
                     <div className="ah-debug-cols" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '10px' }}>
                         <div className="ah-debug-col">

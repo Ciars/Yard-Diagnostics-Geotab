@@ -1321,11 +1321,11 @@ export class FleetDataService {
 
     /**
      * Fetch deep health history for a specific asset (On-Demand)
-     * Fetches 3 months of Faults and Exceptions for actionable diagnostics.
+     * Fetches 30 days of Faults and Exceptions for actionable diagnostics.
      */
     async getAssetHealthDetails(deviceId: string) {
-        // Window: 3 Months
-        const fromDate = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
+        const DIAGNOSTIC_LOOKBACK_DAYS = 30;
+        const fromDate = new Date(Date.now() - DIAGNOSTIC_LOOKBACK_DAYS * 24 * 60 * 60 * 1000).toISOString();
 
         // 1. FaultData (Raw DTCs)
         const faultCall = this.api.call<FaultData[]>('Get', {
@@ -1394,8 +1394,8 @@ export class FleetDataService {
             }
         };
 
-        const recentStatusFromDate = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
-        const historicalStatusFromDate = new Date(Date.now() - 180 * 24 * 60 * 60 * 1000).toISOString();
+        const recentStatusFromDate = new Date(Date.now() - Math.min(7, DIAGNOSTIC_LOOKBACK_DAYS) * 24 * 60 * 60 * 1000).toISOString();
+        const historicalStatusFromDate = fromDate;
 
         // Execute Calls Safely
         let faults: FaultData[] = [];
