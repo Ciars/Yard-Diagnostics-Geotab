@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import type { VehicleData, FaultData, ExceptionEvent, ExtendedDiagnostics } from '@/types/geotab';
 import { useGeotabApi } from '@/hooks/useGeotabApi';
 import { FleetDataService } from '@/services/FleetDataService';
@@ -16,6 +16,26 @@ interface AssetHealthState {
 
 export function useAssetHealth(vehicle: VehicleData) {
     const { api } = useGeotabApi();
+    const lookbackDays = useMemo(() => {
+        const MIN_LOOKBACK_DAYS = 30;
+        const MAX_LOOKBACK_DAYS = 365;
+        const dayMs = 24 * 60 * 60 * 1000;
+
+        const zoneDays = vehicle.zoneDurationMs && vehicle.zoneDurationMs > 0
+            ? Math.ceil(vehicle.zoneDurationMs / dayMs)
+            : 0;
+
+        const heartbeatMs = vehicle.status?.dateTime ? new Date(vehicle.status.dateTime).getTime() : Number.NaN;
+        const staleDays = Number.isNaN(heartbeatMs)
+            ? 0
+            : Math.max(0, Math.ceil((Date.now() - heartbeatMs) / dayMs));
+
+        const dormantDays = typeof vehicle.dormancyDays === 'number' ? Math.max(0, Math.ceil(vehicle.dormancyDays)) : 0;
+        const dynamicDays = Math.max(zoneDays, staleDays, dormantDays);
+
+        return Math.max(MIN_LOOKBACK_DAYS, Math.min(MAX_LOOKBACK_DAYS, dynamicDays));
+    }, [vehicle.zoneDurationMs, vehicle.status?.dateTime, vehicle.dormancyDays]);
+
     const [state, setState] = useState<AssetHealthState>({
         isLoading: true,
         error: null,
@@ -34,7 +54,10 @@ export function useAssetHealth(vehicle: VehicleData) {
             const service = new FleetDataService(api);
             // console.log(`[useAssetHealth] Fetching deep history for ${vehicle.device.name}...`);
 
-            const { faults, exceptions, statusData, extendedDiagnostics } = await service.getAssetHealthDetails(vehicle.device.id);
+            const { faults, exceptions, statusData, extendedDiagnostics } = await service.getAssetHealthDetails(
+                vehicle.device.id,
+                lookbackDays
+            );
 
             const analysis = classifyFaults(faults, exceptions);
 
@@ -56,11 +79,11 @@ export function useAssetHealth(vehicle: VehicleData) {
                 error: `Failed to load detailed history: ${msg}`
             }));
         }
-    }, [api, vehicle.device.id]);
+    }, [api, vehicle.device.id, lookbackDays]);
 
     useEffect(() => {
         loadHistory();
     }, [loadHistory]);
 
-    return { ...state, loadHistory };
+    return { ...state, loadHistory, lookbackDays };
 }
