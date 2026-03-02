@@ -27,6 +27,8 @@ interface FleetState {
     // UI
     sidebarCollapsed: boolean;
     searchQuery: string;
+    sortField: string;
+    sortDirection: 'asc' | 'desc';
 
     // Meta
     lastUpdated: number | null;
@@ -49,6 +51,7 @@ interface FleetActions {
     setExpandedVehicle: (vehicleId: string | null) => void;
     toggleSidebar: () => void;
     setSearchQuery: (query: string) => void;
+    setSortState: (field: string, direction: 'asc' | 'desc') => void;
 
     // Meta actions
     setLastUpdated: (timestamp: number) => void;
@@ -72,6 +75,8 @@ const initialState: FleetState = {
     expandedVehicleId: null,
     sidebarCollapsed: false,
     searchQuery: '',
+    sortField: 'duration',
+    sortDirection: 'desc',
     lastUpdated: null,
     isPollingPaused: false,
 };
@@ -142,6 +147,12 @@ export const useFleetStore = create<FleetStore>()(
                 'setSearchQuery'
             ),
 
+            setSortState: (field, direction) => set(
+                { sortField: field, sortDirection: direction },
+                false,
+                'setSortState'
+            ),
+
             // Meta actions
             setLastUpdated: (timestamp) => set(
                 { lastUpdated: timestamp },
@@ -204,6 +215,10 @@ export const useFleetStore = create<FleetStore>()(
             { searchQuery: query }
         ),
 
+        setSortState: (field, direction) => set(
+            { sortField: field, sortDirection: direction }
+        ),
+
         // Meta actions
         setLastUpdated: (timestamp) => set(
             { lastUpdated: timestamp }
@@ -229,6 +244,8 @@ export const selectActiveKpiFilter = (state: FleetStore) => state.activeKpiFilte
 export const selectExpandedVehicleId = (state: FleetStore) => state.expandedVehicleId;
 export const selectSidebarCollapsed = (state: FleetStore) => state.sidebarCollapsed;
 export const selectSearchQuery = (state: FleetStore) => state.searchQuery;
+export const selectSortField = (state: FleetStore) => state.sortField;
+export const selectSortDirection = (state: FleetStore) => state.sortDirection;
 export const selectIsPollingPaused = (state: FleetStore) => state.isPollingPaused;
 
 /**

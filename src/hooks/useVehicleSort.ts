@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo } from 'react';
 import type { VehicleData } from '@/types/geotab';
+import { useFleetStore, selectSortDirection, selectSortField } from '@/store/useFleetStore';
 
 export type SortField = 'asset' | 'model' | 'driver' | 'fuel' | 'soc' | 'duration';
 export type SortDirection = 'asc' | 'desc';
@@ -52,8 +53,15 @@ function loadSortPreference(): SortPreference {
 
 export function useVehicleSort(vehicles: VehicleData[]) {
     const initialSort = useMemo(() => loadSortPreference(), []);
-    const [sortField, setSortField] = useState<SortField>(initialSort.field);
-    const [sortDirection, setSortDirection] = useState<SortDirection>(initialSort.direction);
+    const rawSortField = useFleetStore(selectSortField);
+    const rawSortDirection = useFleetStore(selectSortDirection);
+    const sortField = isSortField(rawSortField) ? rawSortField : DEFAULT_SORT.field;
+    const sortDirection = isSortDirection(rawSortDirection) ? rawSortDirection : DEFAULT_SORT.direction;
+    const setSortState = useFleetStore((state) => state.setSortState);
+
+    useEffect(() => {
+        setSortState(initialSort.field, initialSort.direction);
+    }, [initialSort, setSortState]);
 
     useEffect(() => {
         if (typeof window === 'undefined') return;
@@ -66,10 +74,9 @@ export function useVehicleSort(vehicles: VehicleData[]) {
 
     const handleSort = (field: SortField) => {
         if (sortField === field) {
-            setSortDirection((prev) => (prev === 'asc' ? 'desc' : 'asc'));
+            setSortState(sortField, sortDirection === 'asc' ? 'desc' : 'asc');
         } else {
-            setSortField(field);
-            setSortDirection(field === 'duration' ? 'desc' : 'asc');
+            setSortState(field, field === 'duration' ? 'desc' : 'asc');
         }
     };
 

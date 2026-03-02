@@ -1,0 +1,14 @@
+{
+  "name": "geoyard-functions",
+  "private": true,
+  "main": "index.js",
+  "engines": {
+    "node": "20"
+  },
+  "scripts": {
+    "lint": "echo 'No lint configured for functions'"
+  },
+  "dependencies": {
+    "firebase-functions": "^6.0.1"
+  }
+}

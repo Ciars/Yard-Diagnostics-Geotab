@@ -3,6 +3,8 @@ import type { VehicleData, FaultData, ExceptionEvent, ExtendedDiagnostics } from
 import { useGeotabApi } from '@/hooks/useGeotabApi';
 import { FleetDataService } from '@/services/FleetDataService';
 import { classifyFaults, VehicleFaultSummary } from '@/services/FaultService';
+import { useRaiStore } from '@/features/rai/store/useRaiStore';
+import { buildExpandedVehicleDetailSnapshot } from '@/features/rai/context/expandedDetailSnapshot';
 
 interface AssetHealthState {
     isLoading: boolean;
@@ -16,6 +18,7 @@ interface AssetHealthState {
 
 export function useAssetHealth(vehicle: VehicleData) {
     const { api } = useGeotabApi();
+    const upsertExpandedDetail = useRaiStore((state) => state.upsertExpandedDetail);
     const lookbackDays = useMemo(() => {
         const MIN_LOOKBACK_DAYS = 30;
         const MAX_LOOKBACK_DAYS = 365;
@@ -60,6 +63,15 @@ export function useAssetHealth(vehicle: VehicleData) {
             );
 
             const analysis = classifyFaults(faults, exceptions);
+            const detailSnapshot = buildExpandedVehicleDetailSnapshot({
+                vehicle,
+                lookbackDays,
+                analysis,
+                faults,
+                exceptions,
+                extendedDiagnostics,
+            });
+            upsertExpandedDetail(detailSnapshot);
 
             setState({
                 isLoading: false,
@@ -79,7 +91,7 @@ export function useAssetHealth(vehicle: VehicleData) {
                 error: `Failed to load detailed history: ${msg}`
             }));
         }
-    }, [api, vehicle.device.id, lookbackDays]);
+    }, [api, lookbackDays, upsertExpandedDetail, vehicle]);
 
     useEffect(() => {
         loadHistory();

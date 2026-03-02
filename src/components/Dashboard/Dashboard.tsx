@@ -5,7 +5,18 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
-import { useFleetStore, selectSelectedZoneId, selectSelectedZone, selectIsPollingPaused, selectSidebarCollapsed } from '@/store/useFleetStore';
+import {
+    useFleetStore,
+    selectSelectedZoneId,
+    selectSelectedZone,
+    selectIsPollingPaused,
+    selectSidebarCollapsed,
+    selectActiveKpiFilter,
+    selectExpandedVehicleId,
+    selectSearchQuery,
+    selectSortDirection,
+    selectSortField
+} from '@/store/useFleetStore';
 import { useVehiclesInZone } from '@/hooks';
 import { POLLING_INTERVALS } from '@/lib/queryClient';
 import { Sidebar } from '@/components/Sidebar/Sidebar';
@@ -16,6 +27,11 @@ import { ZoneMap } from '@/components/Map/ZoneMap';
 import { WeatherTablet } from '@/components/Weather/WeatherTablet';
 import { useZoneWeather } from '@/hooks/useZoneWeather';
 import { useVehicleFilter } from '@/hooks/useVehicleFilter';
+import { useGeotabApi } from '@/hooks/useGeotabApi';
+import { RaiPanel } from '@/features/rai/components/RaiPanel';
+import { buildRaiContextSnapshot, buildRaiSuggestedPrompts } from '@/features/rai/context/raiContextBuilder';
+import { useRaiController } from '@/features/rai/hooks/useRaiController';
+import { useRaiStore } from '@/features/rai/store/useRaiStore';
 import {
     IconFileDownload,
     IconRefresh,
@@ -24,7 +40,8 @@ import {
     IconPlayerPlay,
     IconMapPin,
     IconClockHour3,
-    IconGripVertical
+    IconGripVertical,
+    IconSparkles
 } from '@tabler/icons-react';
 import './Dashboard.css';
 
@@ -41,10 +58,17 @@ function getInitialMapPanelWidth(): number {
 export function Dashboard() {
     const selectedZoneId = useFleetStore(selectSelectedZoneId);
     const selectedZone = useFleetStore(selectSelectedZone);
+    const activeKpiFilter = useFleetStore(selectActiveKpiFilter);
+    const expandedVehicleId = useFleetStore(selectExpandedVehicleId);
+    const searchQuery = useFleetStore(selectSearchQuery);
+    const sortField = useFleetStore(selectSortField);
+    const sortDirection = useFleetStore(selectSortDirection);
     const sidebarCollapsed = useFleetStore(selectSidebarCollapsed);
     const isPollingPaused = useFleetStore(selectIsPollingPaused);
     const setPollingPaused = useFleetStore((s) => s.setPollingPaused);
     const setExpandedVehicle = useFleetStore((s) => s.setExpandedVehicle);
+    const clearRaiExpandedDetails = useRaiStore((state) => state.clearExpandedDetails);
+    const expandedDetailByVehicleId = useRaiStore((state) => state.expandedDetailByVehicleId);
     const [lastRefreshTime, setLastRefreshTime] = useState<string>('15:20:25');
     const [exporting, setExporting] = useState(false);
     const [now, setNow] = useState(() => Date.now());
@@ -61,6 +85,7 @@ export function Dashboard() {
     } | null>(null);
     const resizeStateRef = useRef({ startX: 0, startWidth: getInitialMapPanelWidth() });
     const sidebarWidthPx = sidebarCollapsed ? COLLAPSED_SIDEBAR_WIDTH_PX : EXPANDED_SIDEBAR_WIDTH_PX;
+    const { api } = useGeotabApi();
 
     // Fetch vehicles for selected zone
     const { vehicles, kpis, isLoading, dataUpdatedAt, isEnriching, isFetching, isPollingActive, refetch } = useVehiclesInZone(selectedZone);
@@ -70,6 +95,10 @@ export function Dashboard() {
         [filteredVehicles]
     );
     const { data: zoneWeather } = useZoneWeather(selectedZone, dataUpdatedAt);
+
+    useEffect(() => {
+        clearRaiExpandedDetails();
+    }, [clearRaiExpandedDetails, selectedZoneId]);
 
     useEffect(() => {
         if (dataUpdatedAt) {
@@ -106,6 +135,40 @@ export function Dashboard() {
         ? `${zoneWeather.summary} · ${weatherLabel}`
         : 'Weather unavailable';
     const weatherAnimationKey = `${selectedZoneId ?? 'none'}:${zoneWeather?.weatherCode ?? 'none'}:${weatherLabel}`;
+    const raiContext = useMemo(() => buildRaiContextSnapshot({
+        selectedZoneId,
+        selectedZoneName: selectedZone?.name ?? null,
+        activeKpiFilter,
+        searchQuery,
+        sortField,
+        sortDirection,
+        expandedVehicleId,
+        kpis,
+        vehicles,
+        visibleVehicles: filteredVehicles,
+        expandedDetailByVehicleId,
+    }), [
+        selectedZoneId,
+        selectedZone,
+        activeKpiFilter,
+        searchQuery,
+        sortField,
+        sortDirection,
+        expandedVehicleId,
+        kpis,
+        vehicles,
+        filteredVehicles,
+        expandedDetailByVehicleId
+    ]);
+    const raiSuggestedPrompts = useMemo(
+        () => buildRaiSuggestedPrompts(raiContext),
+        [raiContext]
+    );
+    const rai = useRaiController({
+        api,
+        context: raiContext,
+        suggestedPrompts: raiSuggestedPrompts,
+    });
 
     const clampMapPanelWidth = useCallback((nextWidth: number) => {
         if (typeof window === 'undefined') return nextWidth;
@@ -339,6 +402,15 @@ export function Dashboard() {
             <aside className="dashboard__right-panel">
                 {selectedZoneId ? (
                     <div className="map-container-full">
+                        <button
+                            className={`map-rai-trigger ${rai.isOpen ? 'map-rai-trigger--active' : ''}`}
+                            onClick={rai.toggleOpen}
+                            aria-label={rai.isOpen ? 'Close Rai assistant panel' : 'Open Rai assistant panel'}
+                            title="Rai copilot"
+                        >
+                            <IconSparkles size={16} />
+                            <span>Rai</span>
+                        </button>
                         <ZoneMap
                             zone={selectedZone}
                             vehicles={vehicles}
@@ -347,6 +419,21 @@ export function Dashboard() {
                             hoveredVehicleId={hoveredVehicleId}
                             focusRequest={mapFocusRequest}
                             onVehicleClick={handleVehicleMapClick}
+                        />
+                        <RaiPanel
+                            isOpen={rai.isOpen}
+                            draft={rai.draft}
+                            setDraft={rai.setDraft}
+                            messages={rai.messages}
+                            isSending={rai.isSending}
+                            pendingToolCalls={rai.pendingToolCalls}
+                            lastError={rai.lastError}
+                            badges={rai.badges}
+                            suggestedPrompts={rai.suggestedPrompts}
+                            onClose={rai.closePanel}
+                            onSend={(text) => { void rai.sendMessage(text); }}
+                            onCancel={rai.cancelInFlight}
+                            onRetry={rai.retryLast}
                         />
                     </div>
                 ) : (
