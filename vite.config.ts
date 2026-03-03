@@ -9,6 +9,8 @@ const disableHmr = process.env.VITE_DISABLE_HMR === '1'
 
 // https://vite.dev/config/
 export default defineConfig({
+    // Relative asset URLs are required for some Add-In loaders that proxy/inject index.html.
+    base: './',
     plugins: [react()],
     resolve: {
         alias: {
