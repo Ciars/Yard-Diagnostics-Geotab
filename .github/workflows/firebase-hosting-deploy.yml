@@ -12,8 +12,6 @@ permissions:
 jobs:
   build_and_deploy:
     runs-on: ubuntu-latest
-    env:
-      FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -39,7 +37,7 @@ jobs:
           echo "GOOGLE_APPLICATION_CREDENTIALS=$RUNNER_TEMP/firebase-sa.json" >> $GITHUB_ENV
 
       - name: Deploy Hosting
-        run: firebase deploy --project "$FIREBASE_PROJECT_ID" --only hosting --non-interactive
+        run: firebase deploy --project "yard-diagnostics" --only hosting --non-interactive
 
       - name: Cleanup Credentials
         if: always()
