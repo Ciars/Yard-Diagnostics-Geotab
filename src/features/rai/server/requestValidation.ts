@@ -11,7 +11,12 @@ function isObject(value: unknown): value is Record<string, unknown> {
 
 function sanitizeText(value: unknown, maxChars: number): string {
     if (typeof value !== 'string') return '';
-    const withoutControls = value.replace(/[\u0000-\u001f\u007f]/g, ' ');
+    const withoutControls = Array.from(value)
+        .map((char) => {
+            const code = char.charCodeAt(0);
+            return code <= 0x1f || code === 0x7f ? ' ' : char;
+        })
+        .join('');
     return withoutControls.trim().slice(0, maxChars);
 }
 

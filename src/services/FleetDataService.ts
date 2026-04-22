@@ -15,17 +15,13 @@ import type {
     ExceptionEvent
 } from '@/types/geotab';
 import { isPointInPolygon, getPolygonBoundingBox } from '@/lib/geoUtils';
-import { calculateVehicleKpis, hoursSince } from '@/lib/vehicleHealthPredicates';
+import { calculateVehicleKpis } from '@/lib/vehicleHealthPredicates';
 import { isActiveExceptionCritical, isRoadworthyCriticalEngineFault } from './FaultService';
 import { VinDecoderService } from './VinDecoderService';
 import { apiCache, CacheTTL } from '@/lib/apiCache';
+import { calculateDormancy, parseCurrentStateDurationMs } from './DormancyService';
 
 // Helper to calculate bounding box for a polygon (fast pre-filter for zone checks)
-
-// Helper for 'Days Since'
-const daysSince = (isoDate: string) => {
-    return hoursSince(isoDate) / 24;
-};
 
 const VERBOSE_FLEET_LOGS = import.meta.env.DEV && import.meta.env.VITE_VERBOSE_FLEET_LOGS === '1';
 
@@ -38,39 +34,6 @@ interface ZoneCriticalContext {
 interface ZoneCriticalCacheEntry {
     context: ZoneCriticalContext;
     cachedAt: number;
-}
-
-// Helper: Parse ISO Duration or TimeSpan
-function parseDuration(duration: string): number {
-    if (!duration) return 0;
-
-    // 1. ISO 8601 (PT...)
-    if (duration.startsWith('P')) {
-        const daysMatch = duration.match(/(\d+)D/);
-        const hoursMatch = duration.match(/(\d+)H/);
-        const minsMatch = duration.match(/(\d+)M/);
-        const secsMatch = duration.match(/(\d+(?:\.\d+)?)S/);
-
-        let ms = 0;
-        if (daysMatch) ms += parseInt(daysMatch[1], 10) * 24 * 3600 * 1000;
-        if (hoursMatch) ms += parseInt(hoursMatch[1], 10) * 3600 * 1000;
-        if (minsMatch) ms += parseInt(minsMatch[1], 10) * 60 * 1000;
-        if (secsMatch) ms += parseFloat(secsMatch[1]) * 1000;
-        return ms;
-    }
-
-    // 2. .NET TimeSpan (d.hh:mm:ss)
-    const timeSpanRegex = /^(?:(\d+)\.)?(\d{1,2}):(\d{2}):(\d{2})(?:\.(\d+))?$/;
-    const match = duration.match(timeSpanRegex);
-    if (match) {
-        const days = parseInt(match[1] || '0', 10);
-        const hours = parseInt(match[2], 10);
-        const mins = parseInt(match[3], 10);
-        const secs = parseInt(match[4], 10);
-        return ((days * 24 * 3600) + (hours * 3600) + (mins * 60) + secs) * 1000;
-    }
-
-    return 0;
 }
 
 export class FleetDataService {
@@ -813,9 +776,10 @@ export class FleetDataService {
                 if (v.driverName === 'UnknownDriver') v.driverName = 'No Driver';
 
                 // Duration / Stay (Logic for Silent vehicles)
-                if (s.currentStateDuration) {
-                    let duration = parseDuration(s.currentStateDuration);
-                    if (s.speed < 5) {
+                const currentStateDurationMs = parseCurrentStateDurationMs(s.currentStateDuration);
+                if (currentStateDurationMs !== null) {
+                    let duration = currentStateDurationMs;
+                    if (typeof s.speed !== 'number' || s.speed < 5) {
                         const elapsedSinceLog = Date.now() - new Date(s.dateTime).getTime();
                         if (elapsedSinceLog > 0) duration += elapsedSinceLog;
                     }
@@ -828,7 +792,7 @@ export class FleetDataService {
                 }
 
                 // Dormancy
-                v.dormancyDays = (s.speed < 5 && hoursSince(s.dateTime) > 24) ? Math.floor(daysSince(s.dateTime)) : 0;
+                v.dormancyDays = calculateDormancy(s).dormancyDays;
             }
         });
 

@@ -8,7 +8,7 @@
 |--------|---------|----------------|
 | **Device** | Hardware asset | `id`, `serialNumber`, `name`, `vehicleIdentificationNumber` |
 | **Zone** | Geofence/Yard | `id`, `name`, `zoneTypes`, `points` |
-| **DeviceStatusInfo** | Real-time status | `device`, `currentZone`, `driver`, `speed`, `isDeviceCommunicating` |
+| **DeviceStatusInfo** | Real-time status | `device`, `currentZone`, `driver`, `speed`, `currentStateDuration`, `isDeviceCommunicating` |
 | **StatusData** | Telemetry readings | `device`, `diagnostic`, `data`, `dateTime` |
 | **FaultData** | Fault codes (DTCs) | `device`, `diagnostic`, `failureMode`, `dateTime` |
 | **Trip** | Movement history | `device`, `start`, `stop`, `driver`, `distance` |
@@ -27,7 +27,7 @@
 |---|------|-------------|-----------|
 | 1 | **Critical Health** | `FaultData` where `failureMode.severity = 'Critical'` AND `isActive = true` + `DVIRDefect` where `repairStatus != 'Repaired'` | Count of unique devices |
 | 2 | **Silent Assets** | `DeviceStatusInfo.lastCommunicationTime` vs `now()` | > 24 hours |
-| 3 | **Dormant** | `now()` - most recent `Trip.stop` timestamp | > 14 days |
+| 3 | **Dormant** | Stationary `DeviceStatusInfo.currentStateDuration` plus elapsed time since `DeviceStatusInfo.dateTime`; moving vehicles with `speed >= 5` are active | >= 14 whole days |
 | 4 | **Vehicles Charging** | `StatusData` for `DiagnosticChargingStateId` where `data > 0` | Count of unique devices |
 | 5 | **Service Due** | `MaintenanceReminder.dueDate` or `dueMileage` approaching | < 500 miles or < 7 days |
 
@@ -52,13 +52,21 @@
 
 ## 4. UI-Specific Data Logic
 
-### "Just Arrived" Display
+### Dormancy / "Just Arrived" Display
 ```typescript
-const duration = differenceInMinutes(now, trip.stop);
-if (duration < 5) return "Just Arrived";
-if (duration < 60) return `${duration}m`;
-if (duration < 1440) return `${Math.floor(duration / 60)}h`;
-return `${Math.floor(duration / 1440)}d`;
+if (deviceStatus.speed >= 5) return "Active";
+
+const parsedDurationMs = parseCurrentStateDuration(deviceStatus.currentStateDuration);
+const elapsedSinceStatusMs = differenceInMilliseconds(now, deviceStatus.dateTime);
+const stationaryMs = parsedDurationMs === null
+  ? elapsedSinceStatusMs
+  : parsedDurationMs + elapsedSinceStatusMs;
+const stationaryMinutes = Math.floor(stationaryMs / 60000);
+
+if (stationaryMinutes < 5) return "Just Arrived";
+if (stationaryMinutes < 60) return `${stationaryMinutes}m`;
+if (stationaryMinutes < 1440) return `${Math.floor(stationaryMinutes / 60)}h`;
+return `${Math.floor(stationaryMinutes / 1440)}d`;
 ```
 
 ### Last Known Driver
@@ -78,6 +86,9 @@ return driver;
 ```
 
 ### GPS Drift Filter
+
+GPS drift filtering is not part of dormancy. Dormancy is based on `DeviceStatusInfo.currentStateDuration`, with `DeviceStatusInfo.dateTime` age only as a fallback when the duration is missing or invalid.
+
 ```typescript
 // Ignore micro-movements when ignition OFF
 const isValidMovement = (logRecord: LogRecord, prevRecord: LogRecord) => {
@@ -120,7 +131,7 @@ const results = await api.multiCall(calls);
 | Zone list | On focus only | Until blur |
 | DeviceStatusInfo | 60 seconds | 30 seconds stale |
 | StatusData / FaultData | 60 seconds | 30 seconds stale |
-| Trip (for dormancy) | 5 minutes | 2 minutes stale |
+| Dormancy (`DeviceStatusInfo.currentStateDuration`) | 60 seconds | 30 seconds stale |
 
 ---
 

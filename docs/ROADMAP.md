@@ -292,16 +292,16 @@
 - `src/services/DormancyService.ts` [NEW]
 
 **Acceptance Criteria**:
-- [ ] Calculate days since last Trip.stop
-- [ ] GPS drift filter: ignore < 10m movements with ignition OFF
+- [ ] Calculate whole stationary days from DeviceStatusInfo.currentStateDuration
+- [ ] Fall back to DeviceStatusInfo.dateTime age only when currentStateDuration is missing or invalid
 - [ ] Return "Just Arrived" for < 5 minute stops
-- [ ] Flag vehicles dormant > 14 days
+- [ ] Flag vehicles dormant >= 14 days
 
 **Sub-Agent Instructions**:
 ```
-1. Read docs/DATA_LOGIC.md Section 2 (Dormant) and Section 4 (GPS Drift)
+1. Read docs/DATA_LOGIC.md Section 2 (Dormant)
 2. Create pure functions for dormancy calculation
-3. Handle edge cases: no trips, null dates
+3. Handle edge cases: missing or invalid currentStateDuration, null dates
 4. Export formatDormancyDuration() for display
 ```
 

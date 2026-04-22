@@ -550,7 +550,7 @@ export interface VehicleData {
     fuelLevel?: number;
     stateOfCharge?: number;
     isCharging: boolean;
-    dormancyDays: number | null; // null means never moved (since install)
+    dormancyDays: number | null; // Whole stationary days; null means unknown
     zoneEntryTime?: string; // ISO timestamp when vehicle entered this zone
     zoneDurationMs: number | null; // Duration in zone in milliseconds (clamped to 0). null if unknown.
     isZoneEntryEstimate?: boolean; // true if zoneEntryTime is from fallback (less confident)

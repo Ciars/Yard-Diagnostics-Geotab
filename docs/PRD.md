@@ -147,7 +147,7 @@ hasCriticalFaults: boolean = faults.some(f => f.controller?.name !== 'Telematics
 isDeviceOffline: boolean = lastHeartbeat > 24 hours ago
 
 // Dormant
-isDormant: boolean = timeSinceLastTrip > 14 days
+isDormant: boolean = stationaryCurrentStateDuration >= 14 days
 
 // Charging
 isCharging: boolean = diagnosticId('HV_BATTERY_CURRENT') < 0
@@ -431,7 +431,7 @@ Every 60 seconds:
 
 **Responsibilities:**
 - Fetch and enrich vehicle data with diagnostics, faults, drivers
-- Calculate dormancy (days since last trip)
+- Calculate dormancy from DeviceStatusInfo.currentStateDuration
 - Calculate zone duration (time vehicle has been in current zone)
 - Batch API calls for performance (vehicle-scoped micro-batching)
 
@@ -905,7 +905,6 @@ const faults = await api.call<FaultData[]>('Get', {
 - `ZoneList` (read geofences)
 - `StatusDataList` (read diagnostics)
 - `FaultDataList` (read fault codes)
-- `TripList` (calculate dormancy)
 - `DVIRDefectList` (read inspection defects)
 
 ### Monitoring

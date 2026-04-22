@@ -1,56 +1,129 @@
 /**
  * Dormancy Calculation Engine
  * 
- * Calculates how long a vehicle has been stationary in a zone.
- * Per DATA_LOGIC.md Section 2 and Section 4.
+ * Calculates how long a vehicle has been stationary from DeviceStatusInfo.
  */
 
-import type { Trip, DeviceStatusInfo } from '@/types/geotab';
+import type { DeviceStatusInfo } from '@/types/geotab';
 
 export interface DormancyResult {
     dormancyDays: number;
     dormancyHours: number;
     lastMoveDate: Date | null;
-    isDormant: boolean;      // > 14 days
+    isDormant: boolean;      // >= 14 days
     isJustArrived: boolean;  // < 5 minutes
     displayText: string;
 }
 
-// Constants
 const DORMANT_THRESHOLD_DAYS = 14;
 const JUST_ARRIVED_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
-const GPS_DRIFT_THRESHOLD_METERS = 10;
+const MS_PER_HOUR = 60 * 60 * 1000;
+const MS_PER_DAY = 24 * MS_PER_HOUR;
 
 /**
- * Calculate dormancy based on last trip end time
- * 
- * @param lastTrip - The most recent trip for the vehicle
- * @param deviceStatus - Current device status info
- * @returns Dormancy calculation result
+ * Parse Geotab DeviceStatusInfo.currentStateDuration.
+ *
+ * Geotab can return either ISO 8601 duration strings (PT5M) or .NET
+ * TimeSpan strings (30.00:00:00). Returns null only when the value is
+ * missing or invalid; a zero duration is valid.
  */
-export function calculateDormancy(
-    lastTrip: Trip | null | undefined,
-    deviceStatus?: DeviceStatusInfo
-): DormancyResult {
-    const now = new Date();
+export function parseCurrentStateDurationMs(duration: string | null | undefined): number | null {
+    if (!duration) return null;
 
-    // Priority: 
-    // 1. Trip stop time (if not null)
-    // 2. Trip start time (if stop is null, vehicle is likely moving)
-    // 3. Heartbeat timestamp
-    let lastMoveDate: Date | null = null;
+    if (duration.startsWith('P')) {
+        const isoRegex = /^P(?:(\d+(?:\.\d+)?)D)?(?:T(?:(\d+(?:\.\d+)?)H)?(?:(\d+(?:\.\d+)?)M)?(?:(\d+(?:\.\d+)?)S)?)?$/;
+        const match = duration.match(isoRegex);
+        if (!match) return null;
 
-    if (lastTrip?.stop && lastTrip.stop !== '0001-01-01T00:00:00.000Z') {
-        lastMoveDate = new Date(lastTrip.stop);
-    } else if (lastTrip?.start) {
-        // If it's driving now, it's active "Now"
-        lastMoveDate = new Date();
-    } else if (deviceStatus?.dateTime) {
-        lastMoveDate = new Date(deviceStatus.dateTime);
+        const days = Number.parseFloat(match[1] || '0');
+        const hours = Number.parseFloat(match[2] || '0');
+        const mins = Number.parseFloat(match[3] || '0');
+        const secs = Number.parseFloat(match[4] || '0');
+        const ms = (((days * 24 + hours) * 60 + mins) * 60 + secs) * 1000;
+
+        return Number.isFinite(ms) ? ms : null;
     }
 
-    // Safety: If date is somehow pre-2000, it's likely a null/wrong value
-    if (!lastMoveDate || isNaN(lastMoveDate.getTime()) || lastMoveDate.getFullYear() < 2000) {
+    const timeSpanRegex = /^(?:(\d+)\.)?(\d{1,2}):(\d{2}):(\d{2})(?:\.(\d+))?$/;
+    const match = duration.match(timeSpanRegex);
+    if (!match) return null;
+
+    const days = Number.parseInt(match[1] || '0', 10);
+    const hours = Number.parseInt(match[2], 10);
+    const mins = Number.parseInt(match[3], 10);
+    const secs = Number.parseInt(match[4], 10);
+
+    if (hours > 23 || mins > 59 || secs > 59) return null;
+
+    const ms = ((days * 24 * 3600) + (hours * 3600) + (mins * 60) + secs) * 1000;
+    return Number.isFinite(ms) ? ms : null;
+}
+
+function elapsedSinceStatusMs(statusDateTime: string | undefined, now: Date): number {
+    if (!statusDateTime) return 0;
+
+    const statusMs = new Date(statusDateTime).getTime();
+    if (!Number.isFinite(statusMs)) return 0;
+
+    return Math.max(0, now.getTime() - statusMs);
+}
+
+function statusAgeFallbackMs(statusDateTime: string | undefined, now: Date): number | null {
+    if (!statusDateTime) return null;
+
+    const statusMs = new Date(statusDateTime).getTime();
+    if (!Number.isFinite(statusMs)) return null;
+
+    return Math.max(0, now.getTime() - statusMs);
+}
+
+function buildDormancyResult(totalMs: number, now: Date): DormancyResult {
+    const safeMs = Math.max(0, totalMs);
+    const dormancyDays = Math.floor(safeMs / MS_PER_DAY);
+    const dormancyHours = safeMs / MS_PER_HOUR;
+    const isJustArrived = safeMs < JUST_ARRIVED_THRESHOLD_MS;
+    const lastMoveDate = new Date(now.getTime() - safeMs);
+
+    return {
+        dormancyDays,
+        dormancyHours,
+        lastMoveDate,
+        isDormant: dormancyDays >= DORMANT_THRESHOLD_DAYS,
+        isJustArrived,
+        displayText: formatDormancyDuration(dormancyDays, isJustArrived),
+    };
+}
+
+/**
+ * Calculate dormancy from DeviceStatusInfo.currentStateDuration.
+ *
+ * Moving vehicles are active. Missing speed is treated as stationary. When
+ * currentStateDuration is missing or invalid, status timestamp age is the only
+ * fallback.
+ */
+export function calculateDormancy(
+    deviceStatus?: DeviceStatusInfo,
+    now: Date = new Date()
+): DormancyResult {
+    const speed = typeof deviceStatus?.speed === 'number' ? deviceStatus.speed : undefined;
+
+    if (speed !== undefined && speed >= 5) {
+        return {
+            dormancyDays: 0,
+            dormancyHours: 0,
+            lastMoveDate: now,
+            isDormant: false,
+            isJustArrived: false,
+            displayText: 'Active',
+        };
+    }
+
+    const currentStateMs = parseCurrentStateDurationMs(deviceStatus?.currentStateDuration);
+    const totalMs = currentStateMs === null
+        ? statusAgeFallbackMs(deviceStatus?.dateTime, now)
+        : currentStateMs + elapsedSinceStatusMs(deviceStatus?.dateTime, now);
+
+    if (totalMs === null) {
         return {
             dormancyDays: 0,
             dormancyHours: 0,
@@ -61,26 +134,7 @@ export function calculateDormancy(
         };
     }
 
-    const msSinceMove = now.getTime() - lastMoveDate.getTime();
-    // Clamp to 0 to avoid future dates causing negative dormancy
-    const diffMs = Math.max(0, msSinceMove);
-    const hoursSinceMove = diffMs / (1000 * 60 * 60);
-    const daysSinceMove = hoursSinceMove / 24;
-
-    // Check if just arrived (< 5 minutes)
-    const isJustArrived = msSinceMove < JUST_ARRIVED_THRESHOLD_MS;
-
-    // Check if dormant (> 14 days)
-    const isDormant = daysSinceMove >= DORMANT_THRESHOLD_DAYS;
-
-    return {
-        dormancyDays: daysSinceMove,
-        dormancyHours: hoursSinceMove,
-        lastMoveDate,
-        isDormant,
-        isJustArrived,
-        displayText: formatDormancyDuration(daysSinceMove, isJustArrived),
-    };
+    return buildDormancyResult(totalMs, now);
 }
 
 /**
@@ -104,33 +158,13 @@ export function formatDormancyDuration(days: number, isJustArrived: boolean = fa
         return hours <= 1 ? '< 1h' : `${hours}h`;
     }
 
-    const roundedDays = Math.round(days);
+    const wholeDays = Math.floor(days);
 
-    if (roundedDays >= DORMANT_THRESHOLD_DAYS) {
-        return `${roundedDays}d`;
+    if (wholeDays >= DORMANT_THRESHOLD_DAYS) {
+        return `${wholeDays}d`;
     }
 
-    return `${roundedDays}d`;
-}
-
-/**
- * Filter out GPS drift movements
- * 
- * GPS can drift slightly even when a vehicle is stationary.
- * This function filters out movements < 10 meters when ignition is OFF.
- * 
- * @param distanceMeters - Distance of the movement
- * @param ignitionOn - Whether ignition was on during movement
- * @returns true if this is GPS drift (should be ignored)
- */
-export function isGpsDrift(distanceMeters: number, ignitionOn: boolean): boolean {
-    // If ignition is on, any movement is real
-    if (ignitionOn) {
-        return false;
-    }
-
-    // If ignition off and distance < 10m, treat as GPS drift
-    return distanceMeters < GPS_DRIFT_THRESHOLD_METERS;
+    return `${wholeDays}d`;
 }
 
 /**

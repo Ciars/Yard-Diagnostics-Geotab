@@ -142,7 +142,7 @@ const queryClient = new QueryClient({
 | `ZoneList` | View yard geofences |
 | `StatusDataList` | Read diagnostic telemetry |
 | `FaultDataList` | Read fault codes |
-| `TripList` | Calculate dormancy/activity |
+| `DeviceStatusInfo` | Calculate live dormancy/activity from current state |
 | `DVIRDefectList` | Check unrepaired defects |
 
 ---

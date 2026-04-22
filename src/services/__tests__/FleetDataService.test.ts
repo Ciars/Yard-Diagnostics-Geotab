@@ -98,6 +98,15 @@ describe('FleetDataService.calculateKpis', () => {
         expect(kpis.dormant).toBe(2);
     });
 
+    it('should count exactly 14 whole dormancy days as dormant', () => {
+        const kpis = FleetDataService.calculateKpis([
+            createMockVehicle({ dormancyDays: 14 }),
+            createMockVehicle({ dormancyDays: 13 }),
+        ]);
+
+        expect(kpis.dormant).toBe(1);
+    });
+
     it('should count charging vehicles', () => {
         const vehicles: VehicleData[] = [
             createMockVehicle({ isCharging: true }),
