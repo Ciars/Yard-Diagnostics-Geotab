@@ -57,7 +57,6 @@ export const AssetRow = memo((props: AssetRowProps) => {
         if (ms < 5 * 60 * 1000) return 'Just Arrived';
         if (hours < 1) return '< 1h';
         if (hours < 24) return `${Math.round(hours)}h`;
-        if (hours >= 24 * 365) return '>1y';
 
         const days = Math.floor(hours / 24);
         return `${days}d`;
