@@ -224,6 +224,16 @@ export function Dashboard() {
         if (vehicles.length === 0) return;
 
         const headers = ['Asset', 'Make/Model', 'Driver', 'Fuel', 'SOC', 'Zone Duration'];
+        const formatZoneDuration = (zoneDurationMs: number | null | undefined): string => {
+            if (zoneDurationMs === null || zoneDurationMs === undefined) return '--';
+
+            const hours = zoneDurationMs / (1000 * 60 * 60);
+            if (zoneDurationMs < 5 * 60 * 1000) return 'Just Arrived';
+            if (hours < 1) return '< 1h';
+            if (hours < 24) return `${Math.round(hours)}h`;
+
+            return `${Math.floor(hours / 24)}d`;
+        };
         const rows = vehicles.map(v => [
             v.device.name,
             v.makeModel || '--',
@@ -231,7 +241,7 @@ export function Dashboard() {
             v.fuelLevel !== undefined ? `${Math.round(v.fuelLevel)}%` : '--',
             v.stateOfCharge !== undefined ? `${Math.round(v.stateOfCharge)}%` : '--',
 
-            v.zoneEntryTime ? `${Math.round((v.zoneDurationMs ?? 0) / (1000 * 60 * 60))}h` : '--'
+            formatZoneDuration(v.zoneDurationMs)
         ]);
 
         const tsvContent = [headers, ...rows].map(row => row.join('\t')).join('\n');
