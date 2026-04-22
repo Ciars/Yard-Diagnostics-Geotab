@@ -37,7 +37,7 @@ jobs:
           echo "GOOGLE_APPLICATION_CREDENTIALS=$RUNNER_TEMP/firebase-sa.json" >> $GITHUB_ENV
 
       - name: Deploy Hosting
-        run: firebase deploy --project "yard-diagnostics" --only hosting --non-interactive
+        run: firebase deploy --project "yarddiag" --only hosting --non-interactive
 
       - name: Cleanup Credentials
         if: always()
