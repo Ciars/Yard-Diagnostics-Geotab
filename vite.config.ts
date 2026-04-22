@@ -9,6 +9,7 @@ const disableHmr = process.env.VITE_DISABLE_HMR === '1'
 
 // https://vite.dev/config/
 export default defineConfig({
+    base: 'https://yard-diagnostics.web.app/',
     plugins: [react()],
     resolve: {
         alias: {
